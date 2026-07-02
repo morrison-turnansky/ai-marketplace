@@ -2,9 +2,9 @@
 name: audit-contract
 description: >-
   Reference-only skill defining the numeric stability audit contract. Contains
-  the 4 inclusion criteria, strong contracts, not-strong-by-default clauses,
-  excluded-by-default rules, assertion pattern guidance, and output formats
-  for both phases. Loaded by audit-agent and review-agent as shared knowledge.
+  the 3 inclusion criteria, strong contracts, not-strong-by-default clauses,
+  assertion pattern guidance, and output formats for both phases. Loaded by
+  audit-agent and review-agent as shared knowledge.
 ---
 
 # Numeric Stability Audit Contract
@@ -13,35 +13,33 @@ Single source of truth for the vLLM test oracle auditor. Both Phase 1 (audit-age
 
 ## Inclusion Criteria
 
-A test is "coincidentally correct" only when **all four** are true:
+A test is "coincidentally correct" only when **all three** are true:
 
 1. **Weak oracle** — depends on exact generated text/token/logprob equality, match-ratio equality, or another weak generated-output oracle.
 2. **Realistic breakage** — a PyTorch numeric/scheduling/compiler change has a realistic chance of changing the asserted value.
-3. **No update path** — no obvious fix during a PyTorch version bump (e.g., refreshing a golden output or adjusting a tolerance).
-4. **No strong contract** — no vLLM/PyTorch/product contract requires the two compared executions to be bitwise/text identical.
+3. **No strong contract** — no vLLM/PyTorch/product contract requires the two compared executions to be bitwise/text identical.
 
-## Excluded by Default
+## Not Coincidentally Correct by Default
 
-These are NOT coincidentally correct:
+These patterns fail one or more criteria and should be classified as NOT_REALISTIC:
 
-1. **Golden output tests** — maintainer can inspect and update the fixture. Clear update path (criterion 3 fails). Caveat: if the same golden is shared across TP=1/2/4, the implicit cross-TP assertion is uncontracted — note this but still classify as HAS_UPDATE_PATH.
-2. **Kernel tolerance tests** (`assert_close(atol=...)`, `torch.allclose`) — tolerance IS the contract (criteria 3+4 fail).
-3. **Difference-only tests** (`assert a != b`) — numeric drift unlikely to flip inequality into equality (criterion 2 fails).
-4. **Smoke/liveness tests** (`assert len(output) > 0`) — FP changes don't produce empty output (criterion 2 fails).
+1. **Difference-only tests** (`assert a != b`) — numeric drift unlikely to flip inequality into equality (criterion 2 fails).
+2. **Smoke/liveness tests** (`assert len(output) > 0`) — FP changes don't produce empty output (criterion 2 fails).
 
 ## Strong Contracts
 
 Treat these as strong enough to classify as STRONG_CONTRACT unless the test adds another weak oracle on top:
 
 1. Eager vs eager with the same request sequence, same engine state, and deterministic sampling.
-2. Same compile mode/artifact/config vs itself. Do NOT generalize to different compile strategies or fused distributed passes.
-3. Eager vs cudagraph for the same graph/execution family.
-4. CPU offload, prefetch offload, sleep/wake restoration, reload, tensorizer, and KV-transfer restoration — data movement/restoration should not change model math.
-5. Streaming vs non-streaming response reconstruction — API transport contract.
-6. Duplicate identical requests in the same batch with the same sampling settings.
-7. Same prompt with the same explicit seed in the same engine/request setup.
-8. Spec decode exact matching only when the test explicitly forces batch-invariant mode/kernels.
-9. Tests under `tests/v1/determinism/` get `VLLM_BATCH_INVARIANT=1` from the autouse `conftest.py` fixture — account for that before classifying as ordinary batch-invariance assumptions.
+2. **Kernel tolerance tests** (`assert_close(atol=...)`, `torch.allclose`) — the tolerance IS the contract. These test numeric precision of discrete compute operations, not LLM output.
+3. Same compile mode/artifact/config vs itself. Do NOT generalize to different compile strategies or fused distributed passes.
+4. Eager vs cudagraph for the same graph/execution family.
+5. CPU offload, prefetch offload, sleep/wake restoration, reload, tensorizer, and KV-transfer restoration — data movement/restoration should not change model math.
+6. Streaming vs non-streaming response reconstruction — API transport contract.
+7. Duplicate identical requests in the same batch with the same sampling settings — only when `VLLM_BATCH_INVARIANT` is enabled. Without it, different batch positions can produce different output due to cuBLAS kernel selection and accumulation order differences.
+8. Same prompt with the same explicit seed in the same engine/request setup.
+9. Spec decode exact matching only when the test explicitly forces batch-invariant mode/kernels.
+10. Tests under `tests/v1/determinism/` get `VLLM_BATCH_INVARIANT=1` from the autouse `conftest.py` fixture — account for that before classifying as ordinary batch-invariance assumptions.
 
 ## Not Strong By Default
 
@@ -60,7 +58,7 @@ These remain suspicious unless the test explicitly establishes a stronger contra
 
 ## Assertion Pattern Guidance
 
-**Exact equality assertions — apply all 4 criteria:**
+**Exact equality assertions — apply all 3 criteria:**
 - `compare_two_settings` / `compare_all_settings` — exact dict equality across two server configs
 - `check_outputs_equal` — exact text + token ID equality between two output sequences
 - `validate_generated_texts` — exact text equality, cross-runtime (vLLM vs HuggingFace)
@@ -82,58 +80,37 @@ These remain suspicious unless the test explicitly establishes a stronger contra
 
 | Classification | Meaning | Action |
 |---|---|---|
-| COINCIDENTALLY_CORRECT | All 4 criteria met | Needs fixing — add BI mode, tolerance, or golden strings |
+| COINCIDENTALLY_CORRECT | All 3 criteria met | Needs fixing — add BI mode, tolerance, or golden strings |
 | STRONG_CONTRACT | Strong contract exists (cite clause) | Remove from list — exact match is correct by design |
-| HAS_UPDATE_PATH | Maintainer can refresh on PyTorch bump | Remove from list — golden/tolerance is the update path |
 | NOT_REALISTIC | Drift won't change outcome | Remove from list — breakage is not realistic |
 
-## Phase 1 Output Format (audit-agent)
+## Output Format
 
-For each suspicious test function:
+Both agents write structured JSON using `${CLAUDE_PLUGIN_ROOT}/scripts/output_object.py`. See [example.md](example.md) for complete worked examples.
 
-```
-CANDIDATE: <test function name>
-  FILE: <path>
-  LINE: <line number>
-  VERDICT: <COINCIDENTALLY_CORRECT / NOT_COINCIDENTALLY_CORRECT>
-  COMPARISON: <what two executions>
-  ORACLE: <assertion type>
-  HELPER: <helper function or "direct assertion">
-  BATCH_INVARIANT_ENABLED: yes/no
-  CODE_PATH_VERIFIED: yes/no
-  FIXTURES: <relevant fixtures>
-  C1_WEAK_ORACLE: yes/no — <brief reason>
-  C2_REALISTIC_BREAKAGE: yes/no — <brief reason>
-  C3_NO_UPDATE_PATH: yes/no — <brief reason>
-  C4_NO_STRONG_CONTRACT: yes/no — <cite clause number>
-  CLASSIFICATION: <COINCIDENTALLY_CORRECT / STRONG_CONTRACT / HAS_UPDATE_PATH / NOT_REALISTIC>
-  CODE_SNIPPET: |
-    <assertion and surrounding context>
-```
+**Phase 1** uses `AuditCandidate` and `AuditReport`, calls `write_split()` to produce `audit-cc.json` and `audit-not-cc.json`.
 
-End with:
+**Phase 2** uses `ReviewCandidate` and `ReviewReport`, writes to `review-cc.json`.
 
-```
-# Evidence Summary
-Test files in scope: <N>
-Candidates analyzed: <N>
-```
+Fields per candidate:
 
-## Phase 2 Output Format (review-agent)
-
-For each candidate from Phase 1:
-
-```
-CANDIDATE: <test function name>
-  PHASE_1_CLASSIFICATION: <what Phase 1 said>
-  VERDICT: AGREE / RECLASSIFY
-  C1_WEAK_ORACLE: <agree/disagree> — <reason if disagree>
-  C2_REALISTIC_BREAKAGE: <agree/disagree> — <reason if disagree>
-  C3_NO_UPDATE_PATH: <agree/disagree> — <reason if disagree>
-  C4_NO_STRONG_CONTRACT: <agree/disagree> — <cite clause if Phase 1 missed one>
-  FINAL_CLASSIFICATION: <COINCIDENTALLY_CORRECT / STRONG_CONTRACT / HAS_UPDATE_PATH / NOT_REALISTIC>
-  CODE_SNIPPET: |
-    <evidence from the source code supporting the verdict>
-```
-
-End with summary table and disagreement report.
+| Field | Phase 1 | Phase 2 | Description |
+|-------|---------|---------|-------------|
+| candidate | yes | yes | Test function name |
+| file | yes | yes | Test file path |
+| line | yes | yes | Line number of assertion |
+| comparison | yes | yes | What two executions are compared |
+| oracle | yes | yes | Assertion type |
+| helper | yes | yes | Helper function or "direct assertion" |
+| batch_invariant_enabled | yes | yes | Whether VLLM_BATCH_INVARIANT is set |
+| code_path_verified | yes | yes | Whether test asserts feature ran |
+| fixtures | yes | yes | Relevant autouse fixtures |
+| c1_weak_oracle | yes | yes | Phase 1: "yes/no — reason". Phase 2: "agree/disagree — reason" |
+| c2_realistic_breakage | yes | yes | Same pattern |
+| c3_no_strong_contract | yes | yes | Cite clause number |
+| classification | yes | yes | COINCIDENTALLY_CORRECT / STRONG_CONTRACT / NOT_REALISTIC |
+| coincidentally_correct | yes | yes | true / false |
+| code_snippet | yes | yes | Assertion and surrounding context |
+| phase_1_classification | — | yes | What Phase 1 said |
+| phase_1_coincidentally_correct | — | yes | What Phase 1 said (true/false) |
+| review | — | yes | AGREE / RECLASSIFY — reason |

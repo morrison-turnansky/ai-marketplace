@@ -1,0 +1,1943 @@
+diff --git a/tests/entrypoints/openai/responses/conftest.py b/tests/entrypoints/openai/responses/conftest.py
+index a1d16b123166..5bba59781f10 100644
+--- a/tests/entrypoints/openai/responses/conftest.py
++++ b/tests/entrypoints/openai/responses/conftest.py
+@@ -251,7 +251,13 @@ def _validate_field_consistency(events: list) -> None:
+             "response.reasoning_part.added",
+         ):
+             _assert_item_fields(event, etype, active_item_id, active_output_index)
+-            active_content_index = getattr(event, "content_index", None)
++            content_index = getattr(event, "content_index", None)
++            if active_content_index is None:
++                assert content_index == 0, (
++                    f"{etype} for a new item must start at content_index 0, "
++                    f"got {content_index}"
++                )
++            active_content_index = content_index
+             continue
+ 
+         # --- all other item-level events --------------------------
+diff --git a/tests/entrypoints/openai/responses/test_harmony.py b/tests/entrypoints/openai/responses/test_harmony.py
+index 88dd2d38457d..2c70b06d8129 100644
+--- a/tests/entrypoints/openai/responses/test_harmony.py
++++ b/tests/entrypoints/openai/responses/test_harmony.py
+@@ -454,6 +454,7 @@ async def test_streaming(client: OpenAI, model_name: str, background: bool):
+             if event.type == "response.output_item.added":
+                 assert event.item.id != current_item_id
+                 current_item_id = event.item.id
++                current_content_index = -1
+             elif event.type in [
+                 "response.output_text.delta",
+                 "response.reasoning_text.delta",
+@@ -465,7 +466,7 @@ async def test_streaming(client: OpenAI, model_name: str, background: bool):
+                 "response.content_part.added",
+                 "response.reasoning_part.added",
+             ]:
+-                assert event.content_index != current_content_index
++                assert event.content_index == current_content_index + 1
+                 current_content_index = event.content_index
+             elif event.type in [
+                 "response.output_text.delta",
+diff --git a/tests/entrypoints/openai/responses/test_harmony_utils.py b/tests/entrypoints/openai/responses/test_harmony_utils.py
+index 07bc43d99ce0..bd4a46741d88 100644
+--- a/tests/entrypoints/openai/responses/test_harmony_utils.py
++++ b/tests/entrypoints/openai/responses/test_harmony_utils.py
+@@ -2,8 +2,10 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Unit tests for vllm.entrypoints.openai.responses.harmony."""
+ 
++import pytest
+ from openai.types.responses import (
+     ResponseFunctionToolCall,
++    ResponseFunctionWebSearch,
+     ResponseOutputMessage,
+     ResponseReasoningItem,
+ )
+@@ -12,7 +14,6 @@
+ 
+ from vllm.entrypoints.openai.responses.harmony import (
+     harmony_to_response_output,
+-    parser_state_to_response_output,
+     response_previous_input_to_harmony,
+ )
+ 
+@@ -95,7 +96,8 @@ def test_tool_message_with_empty_content(self):
+ class TestHarmonyToResponseOutput:
+     """Tests for harmony_to_response_output function."""
+ 
+-    def test_commentary_with_no_recipient_creates_message(self):
++    @pytest.mark.parametrize("incomplete", [False, True])
++    def test_commentary_with_no_recipient_creates_message(self, incomplete):
+         """Test that commentary with recipient=None (preambles) creates message items.
+ 
+         Per Harmony format, preambles are intended to be shown to end-users,
+@@ -108,13 +110,15 @@ def test_commentary_with_no_recipient_creates_message(self):
+         message = message.with_channel("commentary")
+         # recipient is None by default, representing a preamble
+ 
+-        output_items = harmony_to_response_output(message)
++        output_items = harmony_to_response_output(
++            message, frozenset(), incomplete=incomplete
++        )
+ 
+         assert len(output_items) == 1
+         assert isinstance(output_items[0], ResponseOutputMessage)
+         assert output_items[0].type == "message"
+         assert output_items[0].role == "assistant"
+-        assert output_items[0].status == "completed"
++        assert output_items[0].status == ("incomplete" if incomplete else "completed")
+         assert len(output_items[0].content) == 1
+         assert output_items[0].content[0].type == "output_text"
+         assert (
+@@ -122,82 +126,148 @@ def test_commentary_with_no_recipient_creates_message(self):
+             == "I will now search for the weather information."
+         )
+ 
+-    def test_commentary_with_function_recipient_creates_function_call(self):
+-        """Test commentary with recipient='functions.X' creates function calls."""
+-        message = Message.from_role_and_content(
+-            Role.ASSISTANT, '{"location": "San Francisco", "units": "celsius"}'
++    @pytest.mark.parametrize("channel", ["commentary", "comment", "analysis", "final"])
++    @pytest.mark.parametrize(
++        ("recipient", "fn_names", "expected_name"),
++        [
++            ("functions.get_weather", frozenset(), "get_weather"),
++            ("get_weather", frozenset({"get_weather"}), "get_weather"),
++            ("math.sum", frozenset({"math.sum"}), "math.sum"),
++        ],
++    )
++    @pytest.mark.parametrize("incomplete", [False, True])
++    def test_function_recipient_creates_function_call(
++        self, channel, recipient, fn_names, expected_name, incomplete
++    ):
++        """Function recipients create function calls across channels."""
++        content = '{"location": "San Francisco"}'
++        if recipient == "math.sum":
++            content = '{"a": 1, "b": 2}'
++
++        message = Message.from_role_and_content(Role.ASSISTANT, content)
++        message = message.with_channel(channel)
++        message = message.with_recipient(recipient)
++
++        output_items = harmony_to_response_output(
++            message, fn_names, incomplete=incomplete
+         )
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("functions.get_weather")
+-
+-        output_items = harmony_to_response_output(message)
+ 
+         assert len(output_items) == 1
+         assert isinstance(output_items[0], ResponseFunctionToolCall)
+         assert output_items[0].type == "function_call"
+-        assert output_items[0].name == "get_weather"
+-        assert (
+-            output_items[0].arguments
+-            == '{"location": "San Francisco", "units": "celsius"}'
+-        )
++        assert output_items[0].name == expected_name
++        assert output_items[0].arguments == content
+         assert output_items[0].call_id.startswith("call_")
+         assert output_items[0].id.startswith("fc_")
+-        assert output_items[0].status == "completed"
+-
+-    def test_commentary_with_python_recipient_creates_reasoning(self):
+-        """Test that commentary with recipient='python' creates reasoning items."""
+-        message = Message.from_role_and_content(
+-            Role.ASSISTANT, "import numpy as np\nprint(np.array([1, 2, 3]))"
++        assert output_items[0].status == ("incomplete" if incomplete else "completed")
++
++    @pytest.mark.parametrize("channel", ["commentary", "comment", "analysis", "final"])
++    @pytest.mark.parametrize(
++        ("recipient", "content"),
++        [
++            ("python", "import numpy as np\nprint(np.array([1, 2, 3]))"),
++            ("browser", "Navigating to the specified URL"),
++            ("container", "Running command in container"),
++        ],
++    )
++    @pytest.mark.parametrize("incomplete", [False, True])
++    def test_builtin_recipient_creates_reasoning(
++        self, channel, recipient, content, incomplete
++    ):
++        """Built-in recipients create reasoning items."""
++        message = Message.from_role_and_content(Role.ASSISTANT, content)
++        message = message.with_channel(channel)
++        message = message.with_recipient(recipient)
++
++        output_items = harmony_to_response_output(
++            message, frozenset(), incomplete=incomplete
+         )
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("python")
+-
+-        output_items = harmony_to_response_output(message)
+ 
+         assert len(output_items) == 1
+         assert isinstance(output_items[0], ResponseReasoningItem)
+         assert output_items[0].type == "reasoning"
+-        assert (
+-            output_items[0].content[0].text
+-            == "import numpy as np\nprint(np.array([1, 2, 3]))"
++        assert output_items[0].content[0].text == content
++        assert output_items[0].status is None
++
++    @pytest.mark.parametrize("channel", ["commentary", "comment", "analysis", "final"])
++    @pytest.mark.parametrize(
++        ("recipient", "fn_names", "content", "expected_name", "expected_server_label"),
++        [
++            (
++                "get_weather",
++                frozenset(),
++                '{"arg": "value"}',
++                "get_weather",
++                "get_weather",
++            ),
++            (
++                "not_get_weather",
++                frozenset({"get_weather"}),
++                '{"arg": "value"}',
++                "not_get_weather",
++                "not_get_weather",
++            ),
++            ("repo_browser.list", frozenset(), '{"cmd": "ls"}', "list", "repo_browser"),
++        ],
++    )
++    @pytest.mark.parametrize("incomplete", [False, True])
++    def test_non_function_non_builtin_recipient_creates_mcp_call(
++        self,
++        channel,
++        recipient,
++        fn_names,
++        content,
++        expected_name,
++        expected_server_label,
++        incomplete,
++    ):
++        """Non-function, non-built-in recipients create MCP calls."""
++        message = Message.from_role_and_content(Role.ASSISTANT, content)
++        message = message.with_channel(channel)
++        message = message.with_recipient(recipient)
++
++        output_items = harmony_to_response_output(
++            message, fn_names, incomplete=incomplete
+         )
+ 
+-    def test_commentary_with_browser_recipient_creates_reasoning(self):
+-        """Test that commentary with recipient='browser' creates reasoning items."""
++        assert len(output_items) == 1
++        assert isinstance(output_items[0], McpCall)
++        assert output_items[0].type == "mcp_call"
++        assert output_items[0].name == expected_name
++        assert output_items[0].server_label == expected_server_label
++        assert output_items[0].arguments == content
++        assert output_items[0].status == ("incomplete" if incomplete else "completed")
++
++    @pytest.mark.parametrize("incomplete", [False, True])
++    def test_browser_search_recipient_respects_incomplete(self, incomplete):
++        """browser.search emits a web search call unless the item is incomplete."""
+         message = Message.from_role_and_content(
+-            Role.ASSISTANT, "Navigating to the specified URL"
++            Role.ASSISTANT, '{"query": "weather in San Francisco"}'
+         )
+         message = message.with_channel("commentary")
+-        message = message.with_recipient("browser")
+-
+-        output_items = harmony_to_response_output(message)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseReasoningItem)
+-        assert output_items[0].type == "reasoning"
+-        assert output_items[0].content[0].text == "Navigating to the specified URL"
++        message = message.with_recipient("browser.search")
+ 
+-    def test_commentary_with_container_recipient_creates_reasoning(self):
+-        """Test that commentary with recipient='container' creates reasoning items."""
+-        message = Message.from_role_and_content(
+-            Role.ASSISTANT, "Running command in container"
++        output_items = harmony_to_response_output(
++            message, frozenset(), incomplete=incomplete
+         )
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("container")
+ 
+-        output_items = harmony_to_response_output(message)
++        if incomplete:
++            assert output_items == []
++            return
+ 
+         assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseReasoningItem)
+-        assert output_items[0].type == "reasoning"
+-        assert output_items[0].content[0].text == "Running command in container"
++        assert isinstance(output_items[0], ResponseFunctionWebSearch)
++        assert output_items[0].type == "web_search_call"
++        assert output_items[0].status == "completed"
++        assert output_items[0].action.type == "search"
++        assert output_items[0].action.query == "cursor:weather in San Francisco"
+ 
+     def test_commentary_with_empty_content_and_no_recipient(self):
+         """Test edge case: empty commentary with recipient=None."""
+         message = Message.from_role_and_content(Role.ASSISTANT, "")
+         message = message.with_channel("commentary")
+ 
+-        output_items = harmony_to_response_output(message)
++        output_items = harmony_to_response_output(message, frozenset())
+ 
+         assert len(output_items) == 1
+         assert isinstance(output_items[0], ResponseOutputMessage)
+@@ -212,7 +282,7 @@ def test_commentary_with_multiple_contents_and_no_recipient(self):
+         message = Message.from_role_and_contents(Role.ASSISTANT, contents)
+         message = message.with_channel("commentary")
+ 
+-        output_items = harmony_to_response_output(message)
++        output_items = harmony_to_response_output(message, frozenset())
+ 
+         # _parse_final_message returns single ResponseOutputMessage with
+         # multiple contents
+@@ -232,7 +302,7 @@ def test_commentary_with_multiple_function_calls(self):
+         message = message.with_channel("commentary")
+         message = message.with_recipient("functions.get_weather")
+ 
+-        output_items = harmony_to_response_output(message)
++        output_items = harmony_to_response_output(message, frozenset())
+ 
+         assert len(output_items) == 2
+         assert all(isinstance(item, ResponseFunctionToolCall) for item in output_items)
+@@ -241,21 +311,6 @@ def test_commentary_with_multiple_function_calls(self):
+         assert output_items[0].arguments == '{"location": "San Francisco"}'
+         assert output_items[1].arguments == '{"location": "New York"}'
+ 
+-    def test_commentary_with_unknown_recipient_creates_mcp_call(self):
+-        """Test that commentary with unknown recipient creates MCP call."""
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"arg": "value"}')
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("custom_tool")
+-
+-        fn_names = frozenset({"other_tool"})
+-        output_items = harmony_to_response_output(message, fn_names)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], McpCall)
+-        assert output_items[0].type == "mcp_call"
+-        assert output_items[0].name == "custom_tool"
+-        assert output_items[0].server_label == "custom_tool"
+-
+     def test_analysis_channel_creates_reasoning(self):
+         """Test that analysis channel creates reasoning items."""
+         message = Message.from_role_and_content(
+@@ -263,7 +318,7 @@ def test_analysis_channel_creates_reasoning(self):
+         )
+         message = message.with_channel("analysis")
+ 
+-        output_items = harmony_to_response_output(message)
++        output_items = harmony_to_response_output(message, frozenset())
+ 
+         assert len(output_items) == 1
+         assert isinstance(output_items[0], ResponseReasoningItem)
+@@ -283,352 +338,6 @@ def test_non_assistant_message_returns_empty(self):
+             "The weather is sunny, 72°F",
+         )
+ 
+-        output_items = harmony_to_response_output(message)
+-
+-        assert len(output_items) == 0
+-
+-
+-class TestHarmonyToResponseOutputWithFunctionToolNames:
+-    """Tests for bare function name handling with function_tool_names."""
+-
+-    def test_bare_name_creates_function_call_when_in_tool_names(self):
+-        """Bare function name matching a known tool creates function call."""
+-        message = Message.from_role_and_content(
+-            Role.ASSISTANT, '{"location": "San Francisco"}'
+-        )
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("get_weather")
+-
+-        fn_names = frozenset({"get_weather"})
+-        output_items = harmony_to_response_output(message, fn_names)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseFunctionToolCall)
+-        assert output_items[0].type == "function_call"
+-        assert output_items[0].name == "get_weather"
+-        assert output_items[0].arguments == '{"location": "San Francisco"}'
+-
+-    def test_bare_name_creates_mcp_call_when_not_in_tool_names(self):
+-        """Bare name not matching any known tool creates MCP call."""
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"arg": "value"}')
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("custom_tool")
+-
+-        fn_names = frozenset({"get_weather"})
+-        output_items = harmony_to_response_output(message, fn_names)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], McpCall)
+-        assert output_items[0].type == "mcp_call"
+-
+-    def test_dotted_function_name_creates_function_call(self):
+-        """Dotted function name in tool names creates function call."""
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"a": 1, "b": 2}')
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("math.sum")
+-
+-        fn_names = frozenset({"math.sum"})
+-        output_items = harmony_to_response_output(message, fn_names)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseFunctionToolCall)
+-        assert output_items[0].name == "math.sum"
+-
+-    def test_empty_tool_names_defaults_to_mcp(self):
+-        """With empty function_tool_names, bare names become MCP calls."""
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"arg": "value"}')
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("get_weather")
+-
+         output_items = harmony_to_response_output(message, frozenset())
+ 
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], McpCall)
+-
+-    def test_prefixed_name_always_function_call(self):
+-        """functions. prefix always creates function call even with empty tool names."""
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"arg": "value"}')
+-        message = message.with_channel("commentary")
+-        message = message.with_recipient("functions.get_weather")
+-
+-        output_items = harmony_to_response_output(message, frozenset())
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseFunctionToolCall)
+-        assert output_items[0].name == "get_weather"
+-
+-
+-class TestParserStateWithFunctionToolNames:
+-    """Tests for parser_state_to_response_output with function_tool_names."""
+-
+-    def test_bare_name_creates_function_call(self):
+-        from unittest.mock import Mock
+-
+-        parser = Mock()
+-        parser.current_content = '{"arg": "value"}'
+-        parser.current_role = Role.ASSISTANT
+-        parser.current_channel = "commentary"
+-        parser.current_recipient = "get_weather"
+-
+-        fn_names = frozenset({"get_weather"})
+-        items = parser_state_to_response_output(parser, fn_names)
+-
+-        assert len(items) == 1
+-        assert isinstance(items[0], ResponseFunctionToolCall)
+-        assert items[0].name == "get_weather"
+-        assert items[0].status == "in_progress"
+-
+-    def test_bare_name_creates_mcp_when_not_in_tool_names(self):
+-        from unittest.mock import Mock
+-
+-        parser = Mock()
+-        parser.current_content = '{"arg": "value"}'
+-        parser.current_role = Role.ASSISTANT
+-        parser.current_channel = "commentary"
+-        parser.current_recipient = "unknown_tool"
+-
+-        fn_names = frozenset({"get_weather"})
+-        items = parser_state_to_response_output(parser, fn_names)
+-
+-        assert len(items) == 1
+-        assert isinstance(items[0], McpCall)
+-        assert items[0].name == "unknown_tool"
+-
+-
+-class TestToolCallsOnNonStandardChannels:
+-    """Tests verifying tool calls are detected regardless of channel."""
+-
+-    def test_function_call_on_comment_channel(self):
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"query": "weather"}')
+-        message = message.with_channel("comment")
+-        message = message.with_recipient("functions.get_weather")
+-
+-        output_items = harmony_to_response_output(message)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseFunctionToolCall)
+-        assert output_items[0].type == "function_call"
+-        assert output_items[0].name == "get_weather"
+-
+-    def test_bare_function_on_comment_channel(self):
+-        message = Message.from_role_and_content(Role.ASSISTANT, '{"query": "weather"}')
+-        message = message.with_channel("comment")
+-        message = message.with_recipient("get_weather")
+-
+-        fn_names = frozenset({"get_weather"})
+-        output_items = harmony_to_response_output(message, fn_names)
+-
+-        assert len(output_items) == 1
+-        assert isinstance(output_items[0], ResponseFunctionToolCall)
+-        assert output_items[0].name == "get_weather"
+-
+-    def test_parser_state_comment_channel_function(self):
+-        from unittest.mock import Mock
+-
+-        parser = Mock()
+-        parser.current_content = '{"arg": "value"}'
+-        parser.current_role = Role.ASSISTANT
+-        parser.current_channel = "comment"
+-        parser.current_recipient = "functions.get_weather"
+-
+-        items = parser_state_to_response_output(parser)
+-
+-        assert len(items) == 1
+-        assert isinstance(items[0], ResponseFunctionToolCall)
+-        assert items[0].name == "get_weather"
+-
+-    def test_parser_state_comment_channel_mcp(self):
+-        from unittest.mock import Mock
+-
+-        parser = Mock()
+-        parser.current_content = '{"arg": "value"}'
+-        parser.current_role = Role.ASSISTANT
+-        parser.current_channel = "comment"
+-        parser.current_recipient = "mcp.server.tool"
+-
+-        fn_names: frozenset[str] = frozenset()
+-        items = parser_state_to_response_output(parser, fn_names)
+-
+-        assert len(items) == 1
+-        assert isinstance(items[0], McpCall)
+-
+-
+-def test_parse_mcp_call_basic() -> None:
+-    """Test that MCP calls are parsed with correct type and server_label."""
+-    message = Message.from_role_and_content(Role.ASSISTANT, '{"path": "/tmp"}')
+-    message = message.with_recipient("filesystem")
+-    message = message.with_channel("commentary")
+-
+-    fn_names: frozenset[str] = frozenset()
+-    output_items = harmony_to_response_output(message, fn_names)
+-
+-    assert len(output_items) == 1
+-    assert isinstance(output_items[0], McpCall)
+-    assert output_items[0].type == "mcp_call"
+-    assert output_items[0].name == "filesystem"
+-    assert output_items[0].server_label == "filesystem"
+-    assert output_items[0].arguments == '{"path": "/tmp"}'
+-    assert output_items[0].status == "completed"
+-
+-
+-def test_parse_mcp_call_dotted_recipient() -> None:
+-    """Test that dotted recipients extract the tool name correctly."""
+-    message = Message.from_role_and_content(Role.ASSISTANT, '{"cmd": "ls"}')
+-    message = message.with_recipient("repo_browser.list")
+-    message = message.with_channel("commentary")
+-
+-    fn_names: frozenset[str] = frozenset()
+-    output_items = harmony_to_response_output(message, fn_names)
+-
+-    assert len(output_items) == 1
+-    assert isinstance(output_items[0], McpCall)
+-    assert output_items[0].name == "list"
+-    assert output_items[0].server_label == "repo_browser"
+-
+-
+-def test_mcp_vs_function_call() -> None:
+-    """Test that function calls are not parsed as MCP calls."""
+-    func_message = Message.from_role_and_content(Role.ASSISTANT, '{"arg": "value"}')
+-    func_message = func_message.with_recipient("functions.my_tool")
+-    func_message = func_message.with_channel("commentary")
+-
+-    func_items = harmony_to_response_output(func_message)
+-
+-    assert len(func_items) == 1
+-    assert not isinstance(func_items[0], McpCall)
+-    assert func_items[0].type == "function_call"
+-
+-
+-def test_mcp_vs_builtin_tools() -> None:
+-    """Test that built-in tools (python, container) are not parsed as MCP calls."""
+-    # Test python (built-in tool) - should be reasoning, not MCP
+-    python_message = Message.from_role_and_content(Role.ASSISTANT, "print('hello')")
+-    python_message = python_message.with_recipient("python")
+-    python_message = python_message.with_channel("commentary")
+-
+-    python_items = harmony_to_response_output(python_message)
+-
+-    assert len(python_items) == 1
+-    assert not isinstance(python_items[0], McpCall)
+-    assert python_items[0].type == "reasoning"
+-
+-
+-def test_parser_state_to_response_output_commentary_channel() -> None:
+-    """Test parser_state_to_response_output with commentary
+-    channel and various recipients."""
+-    from unittest.mock import Mock
+-
+-    # Test 1: functions.* recipient -> should return function tool call
+-    parser_func = Mock()
+-    parser_func.current_content = '{"arg": "value"}'
+-    parser_func.current_role = Role.ASSISTANT
+-    parser_func.current_channel = "commentary"
+-    parser_func.current_recipient = "functions.my_tool"
+-
+-    func_items = parser_state_to_response_output(parser_func)
+-
+-    assert len(func_items) == 1
+-    assert not isinstance(func_items[0], McpCall)
+-    assert func_items[0].type == "function_call"
+-    assert func_items[0].name == "my_tool"
+-    assert func_items[0].status == "in_progress"
+-
+-    # Test 2: MCP tool (not builtin) -> should return MCP call
+-    parser_mcp = Mock()
+-    parser_mcp.current_content = '{"path": "/tmp"}'
+-    parser_mcp.current_role = Role.ASSISTANT
+-    parser_mcp.current_channel = "commentary"
+-    parser_mcp.current_recipient = "filesystem"
+-
+-    fn_names: frozenset[str] = frozenset()
+-    mcp_items = parser_state_to_response_output(parser_mcp, fn_names)
+-
+-    assert len(mcp_items) == 1
+-    assert isinstance(mcp_items[0], McpCall)
+-    assert mcp_items[0].type == "mcp_call"
+-    assert mcp_items[0].name == "filesystem"
+-    assert mcp_items[0].server_label == "filesystem"
+-    assert mcp_items[0].status == "in_progress"
+-
+-    # Test 3: Built-in tool (python)
+-    # should NOT return MCP call, returns reasoning (internal tool interaction)
+-    parser_builtin = Mock()
+-    parser_builtin.current_content = "print('hello')"
+-    parser_builtin.current_role = Role.ASSISTANT
+-    parser_builtin.current_channel = "commentary"
+-    parser_builtin.current_recipient = "python"
+-
+-    builtin_items = parser_state_to_response_output(parser_builtin)
+-
+-    # Built-in tools explicitly return reasoning
+-    assert len(builtin_items) == 1
+-    assert not isinstance(builtin_items[0], McpCall)
+-    assert builtin_items[0].type == "reasoning"
+-
+-    # Test 4: No recipient (preamble) → should return message, not reasoning
+-    parser_preamble = Mock()
+-    parser_preamble.current_content = "I'll search for that information now."
+-    parser_preamble.current_role = Role.ASSISTANT
+-    parser_preamble.current_channel = "commentary"
+-    parser_preamble.current_recipient = None
+-
+-    preamble_items = parser_state_to_response_output(parser_preamble)
+-
+-    assert len(preamble_items) == 1
+-    assert isinstance(preamble_items[0], ResponseOutputMessage)
+-    assert preamble_items[0].type == "message"
+-    assert preamble_items[0].content[0].text == "I'll search for that information now."
+-    assert preamble_items[0].status == "incomplete"  # streaming
+-
+-
+-def test_parser_state_to_response_output_analysis_channel() -> None:
+-    """Test parser_state_to_response_output with analysis
+-    channel and various recipients."""
+-    from unittest.mock import Mock
+-
+-    # Test 1: functions.* recipient -> should return function tool call
+-    parser_func = Mock()
+-    parser_func.current_content = '{"arg": "value"}'
+-    parser_func.current_role = Role.ASSISTANT
+-    parser_func.current_channel = "analysis"
+-    parser_func.current_recipient = "functions.my_tool"
+-
+-    func_items = parser_state_to_response_output(parser_func)
+-
+-    assert len(func_items) == 1
+-    assert not isinstance(func_items[0], McpCall)
+-    assert func_items[0].type == "function_call"
+-    assert func_items[0].name == "my_tool"
+-    assert func_items[0].status == "in_progress"
+-
+-    # Test 2: MCP tool (not builtin) -> should return MCP call
+-    parser_mcp = Mock()
+-    parser_mcp.current_content = '{"query": "test"}'
+-    parser_mcp.current_role = Role.ASSISTANT
+-    parser_mcp.current_channel = "analysis"
+-    parser_mcp.current_recipient = "database"
+-
+-    fn_names: frozenset[str] = frozenset()
+-    mcp_items = parser_state_to_response_output(parser_mcp, fn_names)
+-
+-    assert len(mcp_items) == 1
+-    assert isinstance(mcp_items[0], McpCall)
+-    assert mcp_items[0].type == "mcp_call"
+-    assert mcp_items[0].name == "database"
+-    assert mcp_items[0].server_label == "database"
+-    assert mcp_items[0].status == "in_progress"
+-
+-    # Test 3: Built-in tool (container)
+-    # should NOT return MCP call, falls through to reasoning
+-    parser_builtin = Mock()
+-    parser_builtin.current_content = "docker run"
+-    parser_builtin.current_role = Role.ASSISTANT
+-    parser_builtin.current_channel = "analysis"
+-    parser_builtin.current_recipient = "container"
+-
+-    builtin_items = parser_state_to_response_output(parser_builtin)
+-
+-    # Should fall through to reasoning logic
+-    assert len(builtin_items) == 1
+-    assert not isinstance(builtin_items[0], McpCall)
+-    assert builtin_items[0].type == "reasoning"
++        assert len(output_items) == 0
+diff --git a/tests/entrypoints/openai/responses/test_serving_responses.py b/tests/entrypoints/openai/responses/test_serving_responses.py
+index 64d402663f14..48b68e96d8b2 100644
+--- a/tests/entrypoints/openai/responses/test_serving_responses.py
++++ b/tests/entrypoints/openai/responses/test_serving_responses.py
+@@ -51,6 +51,7 @@
+ )
+ from vllm.inputs import tokens_input
+ from vllm.outputs import CompletionOutput, RequestOutput
++from vllm.parser.harmony import Segment
+ from vllm.sampling_params import SamplingParams
+ 
+ 
+@@ -534,13 +535,9 @@ class TestHarmonyPreambleStreaming:
+     """Tests for preamble (commentary with no recipient) streaming events."""
+ 
+     @staticmethod
+-    def _make_ctx(*, channel, recipient, delta="hello"):
+-        """Build a lightweight mock StreamingHarmonyContext."""
+-        ctx = MagicMock()
+-        ctx.last_content_delta = delta
+-        ctx.parser.current_channel = channel
+-        ctx.parser.current_recipient = recipient
+-        return ctx
++    def _make_segment(*, channel, recipient, delta="hello"):
++        """Build a lightweight segment for Harmony streaming tests."""
++        return Segment(channel=channel, recipient=recipient, delta=delta)
+ 
+     @staticmethod
+     def _make_previous_item(*, channel, recipient, text="preamble text"):
+@@ -559,10 +556,10 @@ def test_preamble_delta_emits_text_events(self) -> None:
+             emit_content_delta_events,
+         )
+ 
+-        ctx = self._make_ctx(channel="commentary", recipient=None)
++        segment = self._make_segment(channel="commentary", recipient=None)
+         state = StreamingState()
+ 
+-        events = emit_content_delta_events(ctx, state)
++        events = emit_content_delta_events(segment, state)
+ 
+         type_names = [e.type for e in events]
+         assert "response.output_text.delta" in type_names
+@@ -574,13 +571,13 @@ def test_preamble_delta_second_token_no_added(self) -> None:
+             emit_content_delta_events,
+         )
+ 
+-        ctx = self._make_ctx(channel="commentary", recipient=None, delta="w")
++        segment = self._make_segment(channel="commentary", recipient=None, delta="w")
+         state = StreamingState()
+         state.sent_output_item_added = True
+         state.current_item_id = "msg_test"
+         state.current_content_index = 0
+ 
+-        events = emit_content_delta_events(ctx, state)
++        events = emit_content_delta_events(segment, state)
+ 
+         type_names = [e.type for e in events]
+         assert "response.output_text.delta" in type_names
+@@ -592,13 +589,13 @@ def test_commentary_with_function_recipient_not_preamble(self) -> None:
+             emit_content_delta_events,
+         )
+ 
+-        ctx = self._make_ctx(
++        segment = self._make_segment(
+             channel="commentary",
+             recipient="functions.get_weather",
+         )
+         state = StreamingState()
+ 
+-        events = emit_content_delta_events(ctx, state)
++        events = emit_content_delta_events(segment, state)
+ 
+         type_names = [e.type for e in events]
+         assert "response.output_text.delta" not in type_names
+@@ -612,6 +609,7 @@ def test_preamble_done_emits_text_done_events(self) -> None:
+ 
+         previous = self._make_previous_item(channel="commentary", recipient=None)
+         state = StreamingState()
++        state.sent_output_item_added = True
+         state.current_item_id = "msg_test"
+         state.current_output_index = 0
+         state.current_content_index = 0
+@@ -634,13 +632,53 @@ def test_commentary_with_recipient_no_preamble_done(self) -> None:
+             channel="commentary", recipient="functions.get_weather"
+         )
+         state = StreamingState()
++        state.is_first_function_call_delta = True
+         state.current_item_id = "fc_test"
++        state.current_call_id = "call_test"
+ 
+         events = emit_previous_item_done_events(previous, state)
+ 
+         type_names = [e.type for e in events]
+         assert "response.output_text.done" not in type_names
+ 
++    @pytest.mark.xfail(
++        reason=(
++            "TODO: Ensure added/in-progress events are emitted for zero-delta items."
++            "So we can safely emit done events for zero-delta items."
++        ),
++        strict=True,
++    )
++    def test_zero_delta_items_should_preserve_streaming_lifecycle(
++        self,
++    ) -> None:
++        """Zero-delta Harmony items should still produce a coherent lifecycle."""
++        from vllm.entrypoints.openai.responses.streaming_events import (
++            emit_previous_item_done_events,
++        )
++
++        cases: list[tuple[str, str | None, str]] = [
++            ("commentary", None, "msg_stale"),
++            ("analysis", None, "msg_stale"),
++            ("commentary", "functions.get_weather", "fc_stale"),
++            ("commentary", "python", "tool_stale"),
++            ("commentary", "repo_browser.list", "mcp_stale"),
++        ]
++
++        for channel, recipient, current_item_id in cases:
++            previous = self._make_previous_item(channel=channel, recipient=recipient)
++            state = StreamingState()
++            state.current_item_id = current_item_id
++            state.current_call_id = "call_stale"
++            state.current_content_index = 0
++
++            events = emit_previous_item_done_events(
++                previous, state, function_tool_names=None
++            )
++
++            type_names = [e.type for e in events]
++            assert "response.output_item.added" in type_names
++            assert "response.output_item.done" in type_names
++
+ 
+ def _make_simple_context_with_output(text, token_ids, response_parser=None):
+     """Create a SimpleContext with a RequestOutput containing the given text."""
+diff --git a/tests/entrypoints/unit_tests/test_context.py b/tests/entrypoints/unit_tests/test_context.py
+index b1c8df4fac34..0fa3661f8ff7 100644
+--- a/tests/entrypoints/unit_tests/test_context.py
++++ b/tests/entrypoints/unit_tests/test_context.py
+@@ -1,18 +1,18 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+-from unittest.mock import MagicMock, patch
++from unittest.mock import patch
+ 
+ import pytest
+-from openai_harmony import Author, Message, Role, StreamState, TextContent
++from openai_harmony import Author, Message, Role, TextContent
+ 
+ from vllm.entrypoints.openai.responses.context import (
+     HarmonyContext,
+     SimpleContext,
+-    StreamingHarmonyContext,
+     TurnMetrics,
+ )
+ from vllm.outputs import CompletionOutput, RequestOutput
++from vllm.parser.harmony import ChunkResult, HarmonyParser, Segment
+ 
+ 
+ def create_mock_request_output(
+@@ -68,25 +68,59 @@ async def generate_mock_outputs(
+         )
+ 
+ 
+-@pytest.fixture
+-def mock_parser():
+-    """Set up a mock parser for tests."""
+-    with patch(
+-        "vllm.entrypoints.openai.responses.context.get_streamable_parser_for_assistant"
+-    ) as mock_parser_factory:
+-        # Create a mock parser object
+-        parser = MagicMock()
+-        parser.messages = []
+-        parser.current_channel = None
+-        parser.state = StreamState.EXPECT_START
+-        mock_parser_factory.return_value = parser
+-        yield parser
++class FakeHarmonyParser(HarmonyParser):
++    def __init__(self):
++        # Skip HarmonyParser initialization and script outputs directly.
++        self.reasoning_parser = None
++        self.tool_parser = None
++        self._chunk_results: list[ChunkResult] = []
++        self._flush_results: list[Segment | None] = []
++        self.processed_chunks: list[list[int]] = []
++
++    def enqueue_chunk_result(
++        self,
++        segments: list[Segment] | None = None,
++        reasoning_token_count: int = 0,
++    ) -> None:
++        self._chunk_results.append(
++            ChunkResult(
++                segments=[] if segments is None else segments,
++                reasoning_token_count=reasoning_token_count,
++            )
++        )
++
++    def enqueue_flush_result(self, segment: Segment | None) -> None:
++        self._flush_results.append(segment)
++
++    def process_chunk(self, token_ids) -> ChunkResult:
++        self.processed_chunks.append(list(token_ids))
++        if self._chunk_results:
++            return self._chunk_results.pop(0)
++        return ChunkResult(segments=[], reasoning_token_count=0)
++
++    def flush(self) -> Segment | None:
++        if self._flush_results:
++            return self._flush_results.pop(0)
++        return None
++
++
++def make_harmony_context(
++    messages=None, available_tools=None, function_tool_names=None
++) -> tuple[HarmonyContext, FakeHarmonyParser]:
++    fake_parser = FakeHarmonyParser()
++    context = HarmonyContext(
++        messages=[] if messages is None else messages,
++        available_tools=[] if available_tools is None else available_tools,
++        function_tool_names=function_tool_names,
++        response_parser=fake_parser,
++    )
++    return context, fake_parser
+ 
+ 
+ def test_single_turn_token_counting():
+     """Test token counting behavior for a single turn."""
+     # Create a context
+-    context = HarmonyContext(messages=[], available_tools=[])
++    context, _ = make_harmony_context()
+ 
+     # Create a mock RequestOutput with specific token counts
+     mock_output = create_mock_request_output(
+@@ -118,7 +152,7 @@ def test_single_turn_token_counting():
+ async def test_multi_turn_token_counting():
+     """Test token counting behavior across multiple turns with tool output."""
+     # Create a context
+-    context = HarmonyContext(messages=[], available_tools=["browser"])
++    context, _ = make_harmony_context(available_tools=["browser"])
+ 
+     # Simulate a conversation with 3 turns
+     # Turn 1: prefill 5, decode 3, tool 7
+@@ -177,7 +211,7 @@ async def test_multi_turn_token_counting():
+ 
+ def test_empty_output_tokens():
+     """Test behavior when RequestOutput has empty output tokens."""
+-    context = HarmonyContext(messages=[], available_tools=[])
++    context, _ = make_harmony_context()
+ 
+     # Create a RequestOutput with empty output tokens
+     mock_output = create_mock_request_output(
+@@ -197,7 +231,7 @@ def test_empty_output_tokens():
+ 
+ def test_missing_prompt_token_ids():
+     """Test behavior when RequestOutput has None prompt_token_ids."""
+-    context = HarmonyContext(messages=[], available_tools=[])
++    context, _ = make_harmony_context()
+ 
+     mock_output = create_mock_request_output(
+         prompt_token_ids=None,  # No prompt token IDs
+@@ -216,12 +250,10 @@ def test_missing_prompt_token_ids():
+     assert context.num_tool_output_tokens == 0
+ 
+ 
+-def test_reasoning_tokens_counting(mock_parser):
++def test_reasoning_tokens_counting():
+     """Test that reasoning tokens are counted correctly."""
+-    context = HarmonyContext(messages=[], available_tools=[])
+-
+-    # Mock parser to simulate reasoning channel
+-    mock_parser.current_channel = "analysis"  # Reasoning channel
++    context, parser = make_harmony_context()
++    parser.enqueue_chunk_result(reasoning_token_count=4)
+ 
+     mock_output = create_mock_request_output(
+         prompt_token_ids=[1, 2, 3],
+@@ -236,13 +268,11 @@ def test_reasoning_tokens_counting(mock_parser):
+     assert context.num_output_tokens == 4
+ 
+ 
+-def test_preamble_tokens_not_counted_as_reasoning(mock_parser):
++def test_preamble_tokens_not_counted_as_reasoning():
+     """Preambles (commentary with no recipient) are visible user text,
+     not hidden reasoning. They must NOT inflate num_reasoning_tokens."""
+-    context = HarmonyContext(messages=[], available_tools=[])
+-
+-    mock_parser.current_channel = "commentary"
+-    mock_parser.current_recipient = None  # preamble
++    context, parser = make_harmony_context()
++    parser.enqueue_chunk_result(reasoning_token_count=0)
+ 
+     mock_output = create_mock_request_output(
+         prompt_token_ids=[1, 2, 3],
+@@ -255,13 +285,11 @@ def test_preamble_tokens_not_counted_as_reasoning(mock_parser):
+     assert context.num_output_tokens == 3
+ 
+ 
+-def test_commentary_with_recipient_counted_as_reasoning(mock_parser):
++def test_commentary_with_recipient_counted_as_reasoning():
+     """Commentary directed at a tool (recipient != None) is hidden from
+     the user, so it should still count as reasoning tokens."""
+-    context = HarmonyContext(messages=[], available_tools=[])
+-
+-    mock_parser.current_channel = "commentary"
+-    mock_parser.current_recipient = "python"
++    context, parser = make_harmony_context()
++    parser.enqueue_chunk_result(reasoning_token_count=3)
+ 
+     mock_output = create_mock_request_output(
+         prompt_token_ids=[1, 2, 3],
+@@ -276,7 +304,7 @@ def test_commentary_with_recipient_counted_as_reasoning(mock_parser):
+ 
+ def test_zero_tokens_edge_case():
+     """Test behavior with all zero token counts."""
+-    context = HarmonyContext(messages=[], available_tools=[])
++    context, _ = make_harmony_context()
+ 
+     # Create a request with empty lists (not None) for both prompt and
+     # output tokens
+@@ -299,10 +327,7 @@ def test_zero_tokens_edge_case():
+ @pytest.mark.asyncio
+ async def test_single_turn_no_tool_output():
+     """Test that first turn never generates tool output tokens."""
+-    context = HarmonyContext(
+-        messages=[],
+-        available_tools=["browser"],  # Tools available
+-    )
++    context, _ = make_harmony_context(available_tools=["browser"])
+ 
+     # Even with large prompt in first turn, no tool tokens should be counted
+     mock_output = create_mock_request_output(
+@@ -324,7 +349,7 @@ async def test_negative_tool_tokens_edge_case():
+     tokens. We should log an error and clamp the value to 0."""
+     # Use patch to check if logger.error was called
+     with patch("vllm.entrypoints.openai.responses.context.logger.error") as mock_log:
+-        context = HarmonyContext(messages=[], available_tools=["browser"])
++        context, _ = make_harmony_context(available_tools=["browser"])
+ 
+         # First turn
+         mock_output1 = create_mock_request_output(
+@@ -360,15 +385,15 @@ async def test_negative_tool_tokens_edge_case():
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_streaming_multi_turn_token_counting(mock_parser):
++async def test_streaming_multi_turn_token_counting():
+     """Test token counting for streaming multi-turn conversations.
+ 
+-    This test focuses on how StreamingHarmonyContext counts tokens in a
++    This test focuses on how HarmonyContext counts tokens in a
+     multi-turn conversation with streaming (token-by-token) outputs and
+     message boundaries.
+     """
+     # Create a streaming context
+-    context = StreamingHarmonyContext(messages=[], available_tools=["browser"])
++    context, parser = make_harmony_context(available_tools=["browser"])
+ 
+     num_prompt_tokens = [3, 8, 13]
+     num_output_tokens = [3, 3, 2]
+@@ -413,10 +438,8 @@ async def test_streaming_multi_turn_token_counting(mock_parser):
+     assert context.num_tool_output_tokens == 0  # No tool output in first turn
+     assert context.first_tok_of_message is True  # Ready for next message
+ 
+-    # Second turn: reasoning tokens in analysis channel
+-    mock_parser.current_channel = "analysis"  # Set to reasoning channel
+-
+     # First token of second turn
++    parser.enqueue_chunk_result(reasoning_token_count=1)
+     context.append_output(
+         create_mock_request_output(
+             prompt_token_ids=[
+@@ -436,6 +459,7 @@ async def test_streaming_multi_turn_token_counting(mock_parser):
+     )
+ 
+     # More tokens in reasoning channel
++    parser.enqueue_chunk_result(reasoning_token_count=1)
+     context.append_output(
+         create_mock_request_output(
+             output_token_ids=[202],
+@@ -443,6 +467,7 @@ async def test_streaming_multi_turn_token_counting(mock_parser):
+         )
+     )
+ 
++    parser.enqueue_chunk_result(reasoning_token_count=1)
+     context.append_output(
+         create_mock_request_output(
+             output_token_ids=[203],
+@@ -460,9 +485,6 @@ async def test_streaming_multi_turn_token_counting(mock_parser):
+     expected_tool_tokens = 8 - 3 - 3  # = 2
+     assert context.num_tool_output_tokens == expected_tool_tokens
+ 
+-    # Third turn: regular output channel
+-    mock_parser.current_channel = "final"  # Switch back to regular channel
+-
+     # Third turn (with more cached tokens)
+     context.append_output(
+         create_mock_request_output(
+@@ -520,13 +542,8 @@ async def test_streaming_multi_turn_token_counting(mock_parser):
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_streaming_message_synchronization(mock_parser):
+-    """Test message synchronization logic from lines 413-417 in context.py.
+-
+-    This test verifies that when parser.messages contains more messages than
+-    the context's _messages (minus initial messages), the context properly
+-    extends its message list with the new parser messages.
+-    """
++async def test_streaming_message_synchronization():
++    """Completed messages from append-local and flush segments sync into context."""
+ 
+     # Create a streaming context with some initial messages
+     initial_messages = [
+@@ -536,23 +553,30 @@ async def test_streaming_message_synchronization(mock_parser):
+             recipient=Role.ASSISTANT,
+         )
+     ]
+-    context = StreamingHarmonyContext(messages=initial_messages, available_tools=[])
++    context, parser = make_harmony_context(messages=initial_messages)
+ 
+     # Verify initial state
+     assert len(context._messages) == 1
+     assert context.num_init_messages == 1
+ 
+-    # Mock parser to have more messages than context
+-    # Simulate parser having processed 3 new messages
+-    mock_parser.messages = [
+-        Message(
+-            author=Author(role=Role.ASSISTANT, name="assistant"),
+-            content=[TextContent(text="Response 1")],
+-            recipient=Role.USER,
+-        ),
+-    ]
++    response_text = "First response"
++    message = Message(
++        author=Author(role=Role.ASSISTANT, name="assistant"),
++        content=[TextContent(text=response_text)],
++        recipient=Role.USER,
++    )
++    parser.enqueue_chunk_result(
++        segments=[
++            Segment(
++                channel="commentary",
++                recipient=None,
++                delta="",
++                completed_message=message,
++            )
++        ]
++    )
+ 
+-    # This should trigger the message synchronization logic
++    # This should sync the completed message from the latest append
+     context.append_output(
+         create_mock_request_output(
+             prompt_token_ids=[1, 2, 3], output_token_ids=[101], finished=False
+@@ -563,36 +587,39 @@ async def test_streaming_message_synchronization(mock_parser):
+     assert len(context._messages) == 2
+ 
+     # Verify the new messages were added correctly
+-    assert context._messages[1].content[0].text == "Response 1"
++    assert context._messages[1].content[0].text == response_text
+ 
+-    # Test the specific condition from line 413-414:
+-    # len(self._messages) - self.num_init_messages < len(self.parser.messages)
+     messages_minus_init = len(context._messages) - context.num_init_messages
+-    parser_messages_count = len(mock_parser.messages)
++    assert messages_minus_init == 1
+ 
+-    # After synchronization, they should be equal (no longer less than)
+-    assert messages_minus_init == parser_messages_count
+-
+-    # Test edge case: add one more parser message
+-    mock_parser.messages.append(
+-        Message(
+-            author=Author(role=Role.ASSISTANT, name="assistant"),
+-            content=[TextContent(text="Response 4")],
+-            recipient=Role.USER,
+-        )
++    response_text = "Second response"
++    message = Message(
++        author=Author(role=Role.ASSISTANT, name="assistant"),
++        content=[TextContent(text=response_text)],
++        recipient=Role.USER,
+     )
+-
+-    # Create another output to trigger synchronization again
+-    mock_output2 = create_mock_request_output(
+-        prompt_token_ids=[1, 2, 3], output_token_ids=[102], finished=True
++    flush_segment = Segment(
++        channel="commentary",
++        recipient=None,
++        delta="",
++        completed_message=message,
+     )
++    parser.enqueue_flush_result(flush_segment)
+ 
+-    context.append_output(mock_output2)
++    # Create another output to trigger synchronization via flush()
++    context.append_output(
++        create_mock_request_output(
++            prompt_token_ids=[1, 2, 3], output_token_ids=[102], finished=True
++        )
++    )
+ 
+-    # Verify the fourth message was added, num_init_messages is still 1
++    # Verify the flushed response was added, num_init_messages is still 1
+     assert len(context._messages) == 3
+     assert context.num_init_messages == 1
+-    assert context._messages[2].content[0].text == "Response 4"
++    assert context._messages[2].content[0].text == response_text
++    assert context.last_append_flush_status is True
++    assert len(context.last_append_segments) == 1
++    assert context.last_append_segments[0].completed_message is message
+ 
+ 
+ def test_turn_metrics_copy_and_reset():
+diff --git a/vllm/entrypoints/openai/responses/context.py b/vllm/entrypoints/openai/responses/context.py
+index a7cb96f9496e..d75e5d5a5484 100644
+--- a/vllm/entrypoints/openai/responses/context.py
++++ b/vllm/entrypoints/openai/responses/context.py
+@@ -18,7 +18,7 @@
+ from openai.types.responses.response_output_message import ResponseOutputMessage
+ from openai.types.responses.response_output_text import ResponseOutputText
+ from openai.types.responses.tool import Mcp
+-from openai_harmony import Author, Message, Role, StreamState, TextContent
++from openai_harmony import Author, HarmonyError, Message, Role, TextContent
+ 
+ from vllm import envs
+ from vllm.entrypoints.chat_utils import (
+@@ -29,11 +29,7 @@
+ from vllm.entrypoints.openai.engine.protocol import (
+     FunctionCall,
+ )
+-from vllm.entrypoints.openai.parser.harmony_utils import (
+-    get_encoding,
+-    get_streamable_parser_for_assistant,
+-    render_for_completion,
+-)
++from vllm.entrypoints.openai.parser.harmony_utils import render_for_completion
+ from vllm.entrypoints.openai.responses.protocol import (
+     ResponseInputOutputItem,
+     ResponseRawMessageAndToken,
+@@ -597,18 +593,21 @@ def __init__(
+         self,
+         messages: list,
+         available_tools: list[str],
+-        function_tool_names: frozenset[str] | None = None,
++        function_tool_names: frozenset[str],
+         response_parser: Parser | None = None,
+     ):
++        from vllm.parser.harmony import HarmonyParser, Segment
++
++        assert isinstance(response_parser, HarmonyParser)
++
+         self._messages = messages
+-        self.response_parser = response_parser
++        self.response_parser: HarmonyParser = response_parser
+         self.finish_reason: str | None = None
+         self.available_tools = available_tools
+         self.function_tool_names = function_tool_names
+         self._tool_sessions: dict[str, ClientSession | Tool] = {}
+         self.called_tools: set[str] = set()
+ 
+-        self.parser = get_streamable_parser_for_assistant()
+         self.num_init_messages = len(messages)
+         self.num_prompt_tokens = 0
+         self.num_output_tokens = 0
+@@ -616,44 +615,47 @@ def __init__(
+         self.num_reasoning_tokens = 0
+         self.num_tool_output_tokens = 0
+ 
++        self.last_append_segments: list[Segment] = []
++        self.last_append_flush_status: bool | HarmonyError = False
++
+         # Turn tracking - replaces multiple individual tracking variables
+         self.current_turn_metrics = TurnMetrics()
+         # Track metrics for all turns
+         self.all_turn_metrics: list[TurnMetrics] = []
+         self.is_first_turn = True
+-        self.first_tok_of_message = True  # For streaming support
++        self.first_tok_of_message = True
+         self.kv_transfer_params: dict[str, Any] | None = None
+ 
+-    def _update_num_reasoning_tokens(self):
+-        channel = self.parser.current_channel
+-        if channel == "analysis":
+-            self.num_reasoning_tokens += 1
+-        elif channel == "commentary" and self.parser.current_recipient is not None:
+-            # Tool interactions (python/browser/container) are hidden.
+-            # Preambles (recipient=None) are visible user text.
+-            self.num_reasoning_tokens += 1
+-
+     def append_output(self, output: RequestOutput) -> None:
++        if self.first_tok_of_message:
++            self.finish_reason = None
++            self._update_prefill_token_usage(output)
++
+         output_token_ids = output.outputs[0].token_ids
+-        self.parser = get_streamable_parser_for_assistant()
+-        for token_id in output_token_ids:
+-            self.parser.process(token_id)
+-            # Check if the current token is part of reasoning content
+-            self._update_num_reasoning_tokens()
+-        self._update_prefill_token_usage(output)
++        result = self.response_parser.process_chunk(output_token_ids)
++        segments = result.segments
++        self.num_reasoning_tokens += result.reasoning_token_count
++
++        self.first_tok_of_message = output.finished
+         self._update_decode_token_usage(output)
+         if output.kv_transfer_params is not None:
+             self.kv_transfer_params = output.kv_transfer_params
+-        # Append current turn to all turn list for next turn's calculations
+-        self.all_turn_metrics.append(self.current_turn_metrics.copy())
+-        self.current_turn_metrics.reset()
+-        # append_output is called only once before tool calling
+-        # in non-streaming case
+-        # so we can append all the parser messages to _messages
+-        output_msgs = self.parser.messages
+-        # The responses finish reason is set in the last message
+-        self.finish_reason = output.outputs[0].finish_reason
+-        self._messages.extend(output_msgs)
++
++        if output.finished:
++            self.finish_reason = output.outputs[0].finish_reason
++            flushed = self.response_parser.flush()
++            if flushed is not None:
++                segments.append(flushed)
++            self.last_append_flush_status = flushed is not None
++            self.all_turn_metrics.append(self.current_turn_metrics.copy())
++            self.current_turn_metrics.reset()
++
++        self.last_append_segments = segments
++        self._messages.extend(
++            segment.completed_message
++            for segment in segments
++            if segment.completed_message is not None
++        )
+ 
+     def append_tool_output(self, output: list[Message]) -> None:
+         output_msgs = output
+@@ -920,88 +922,3 @@ async def cleanup_tool_session(tool_session):
+                 for tool in self.called_tools
+             )
+         )
+-
+-
+-class StreamingHarmonyContext(HarmonyContext):
+-    def __init__(self, *args, **kwargs):
+-        super().__init__(*args, **kwargs)
+-        self.last_output = None
+-
+-        self.parser = get_streamable_parser_for_assistant()
+-        self.encoding = get_encoding()
+-        self.last_tok = None
+-        self.first_tok_of_message = True
+-        self.last_content_delta = None
+-
+-    @property
+-    def messages(self) -> list:
+-        return self._messages
+-
+-    def append_output(self, output: RequestOutput) -> None:
+-        # append_output is called for each output token in streaming case,
+-        # so we only want to add the prompt tokens once for each message.
+-        self.last_content_delta = None
+-        if self.first_tok_of_message:
+-            self._update_prefill_token_usage(output)
+-        # Reset self.first_tok_of_message if needed:
+-        # if the current token is the last one of the current message
+-        # (finished=True), then the next token processed will mark the
+-        # beginning of a new message
+-        self.first_tok_of_message = output.finished
+-        last_delta_text = ""
+-        for tok in output.outputs[0].token_ids:
+-            self.parser.process(tok)
+-            last_delta_text += self.parser.last_content_delta or ""
+-        if last_delta_text:
+-            self.last_content_delta = last_delta_text
+-        self._update_decode_token_usage(output)
+-        if output.kv_transfer_params is not None:
+-            self.kv_transfer_params = output.kv_transfer_params
+-
+-        # For streaming, update previous turn when message is complete
+-        if output.finished:
+-            self.all_turn_metrics.append(self.current_turn_metrics.copy())
+-            self.current_turn_metrics.reset()
+-        # Check if the current token is part of reasoning content
+-        self._update_num_reasoning_tokens()
+-        self.last_tok = tok
+-        if len(self._messages) - self.num_init_messages < len(self.parser.messages):
+-            self._messages.extend(
+-                self.parser.messages[len(self._messages) - self.num_init_messages :]
+-            )
+-
+-    def append_tool_output(self, output: list[Message]) -> None:
+-        # Handle the case of tool output in direct message format
+-        assert len(output) == 1, "Tool output should be a single message"
+-        msg = output[0]
+-        # Sometimes the recipient is not set for tool messages,
+-        # so we set it to "assistant"
+-        if msg.author.role == Role.TOOL and msg.recipient is None:
+-            msg.recipient = "assistant"
+-        toks = self.encoding.render(msg)
+-        for tok in toks:
+-            self.parser.process(tok)
+-        self.last_tok = toks[-1]
+-        # TODO: add tool_output messages to self._messages
+-
+-    def is_expecting_start(self) -> bool:
+-        return self.parser.state == StreamState.EXPECT_START
+-
+-    def is_assistant_action_turn(self) -> bool:
+-        return self.last_tok in self.encoding.stop_tokens_for_assistant_actions()
+-
+-    def render_for_completion(self) -> list[int]:
+-        # now this list of tokens as next turn's starting tokens
+-        # `<|start|>assistant`,
+-        # we need to process them in parser.
+-        rendered_tokens = super().render_for_completion()
+-
+-        last_n = -1
+-        to_process = []
+-        while rendered_tokens[last_n] != self.last_tok:
+-            to_process.append(rendered_tokens[last_n])
+-            last_n -= 1
+-        for tok in reversed(to_process):
+-            self.parser.process(tok)
+-
+-        return rendered_tokens
+diff --git a/vllm/entrypoints/openai/responses/harmony.py b/vllm/entrypoints/openai/responses/harmony.py
+index 332496f0f708..60a9f65f4486 100644
+--- a/vllm/entrypoints/openai/responses/harmony.py
++++ b/vllm/entrypoints/openai/responses/harmony.py
+@@ -27,7 +27,7 @@
+ from openai.types.responses.response_reasoning_item import (
+     Content as ResponseReasoningTextContent,
+ )
+-from openai_harmony import Author, Message, Role, StreamableParser, TextContent
++from openai_harmony import Author, Message, Role, TextContent
+ 
+ from vllm.entrypoints.openai.parser.harmony_utils import (
+     BUILTIN_TOOL_TO_MCP_SERVER_LABEL,
+@@ -306,7 +306,9 @@ def _parse_browser_tool_call(message: Message, recipient: str) -> ResponseOutput
+     )
+ 
+ 
+-def _parse_function_call(message: Message, recipient: str) -> list[ResponseOutputItem]:
++def _parse_function_call(
++    message: Message, recipient: str, incomplete: bool = False
++) -> list[ResponseOutputItem]:
+     """Parse function calls into function tool call items."""
+     function_name = extract_function_from_recipient(recipient)
+     output_items = []
+@@ -318,7 +320,7 @@ def _parse_function_call(message: Message, recipient: str) -> list[ResponseOutpu
+             type="function_call",
+             name=function_name,
+             id=f"fc_{random_id}",
+-            status="completed",
++            status="incomplete" if incomplete else "completed",
+         )
+         output_items.append(response_item)
+     return output_items
+@@ -341,7 +343,9 @@ def _parse_reasoning(message: Message) -> list[ResponseOutputItem]:
+     return output_items
+ 
+ 
+-def _parse_final_message(message: Message) -> ResponseOutputItem:
++def _parse_final_message(
++    message: Message, incomplete: bool = False
++) -> ResponseOutputItem:
+     """Parse final channel messages into output message items."""
+     contents = []
+     for content in message.content:
+@@ -356,7 +360,7 @@ def _parse_final_message(message: Message) -> ResponseOutputItem:
+         id=f"msg_{random_uuid()}",
+         content=contents,
+         role=message.author.role,
+-        status="completed",
++        status="incomplete" if incomplete else "completed",
+         type="message",
+     )
+ 
+@@ -381,7 +385,9 @@ def _parse_mcp_recipient(recipient: str) -> tuple[str, str]:
+     return server_label, tool_name
+ 
+ 
+-def _parse_mcp_call(message: Message, recipient: str) -> list[ResponseOutputItem]:
++def _parse_mcp_call(
++    message: Message, recipient: str, incomplete: bool = False
++) -> list[ResponseOutputItem]:
+     """Parse MCP calls into MCP call items."""
+     # Handle built-in tools that need server_label mapping
+     if recipient in BUILTIN_TOOL_TO_MCP_SERVER_LABEL:
+@@ -398,7 +404,7 @@ def _parse_mcp_call(message: Message, recipient: str) -> list[ResponseOutputItem
+             name=tool_name,
+             server_label=server_label,
+             id=f"mcp_{random_uuid()}",
+-            status="completed",
++            status="incomplete" if incomplete else "completed",
+         )
+         output_items.append(response_item)
+     return output_items
+@@ -406,6 +412,7 @@ def _parse_mcp_call(message: Message, recipient: str) -> list[ResponseOutputItem
+ 
+ def _parse_message_no_recipient(
+     message: Message,
++    incomplete: bool = False,
+ ) -> list[ResponseOutputItem]:
+     """Parse a Harmony message with no recipient based on its channel."""
+     if message.channel == "analysis":
+@@ -415,7 +422,7 @@ def _parse_message_no_recipient(
+         # Per Harmony format, preambles (commentary with no recipient) and
+         # final channel content are both intended to be shown to end-users.
+         # See: https://cookbook.openai.com/articles/openai-harmony
+-        return [_parse_final_message(message)]
++        return [_parse_final_message(message, incomplete=incomplete)]
+ 
+     raise ValueError(f"Unknown channel: {message.channel}")
+ 
+@@ -427,7 +434,8 @@ def _parse_message_no_recipient(
+ 
+ def harmony_to_response_output(
+     message: Message,
+-    function_tool_names: frozenset[str] | None = None,
++    function_tool_names: frozenset[str],
++    incomplete: bool = False,
+ ) -> list[ResponseOutputItem]:
+     """Parse a Harmony message into a list of output response items.
+ 
+@@ -445,11 +453,14 @@ def harmony_to_response_output(
+     if recipient is not None:
+         # Browser tool calls (browser.search, browser.open, browser.find)
+         if recipient.startswith("browser."):
+-            output_items.append(_parse_browser_tool_call(message, recipient))
++            if not incomplete:
++                output_items.append(_parse_browser_tool_call(message, recipient))
+ 
+         # Function calls (with or without "functions." prefix)
+         elif is_function_recipient(recipient, function_tool_names):
+-            output_items.extend(_parse_function_call(message, recipient))
++            output_items.extend(
++                _parse_function_call(message, recipient, incomplete=incomplete)
++            )
+ 
+         # Built-in MCP tools (python, browser, container)
+         elif recipient in BUILTIN_TOOL_TO_MCP_SERVER_LABEL:
+@@ -457,125 +468,12 @@ def harmony_to_response_output(
+ 
+         # All other recipients are MCP calls
+         else:
+-            output_items.extend(_parse_mcp_call(message, recipient))
++            output_items.extend(
++                _parse_mcp_call(message, recipient, incomplete=incomplete)
++            )
+ 
+     # No recipient - handle based on channel for non-tool messages
+     else:
+-        output_items.extend(_parse_message_no_recipient(message))
++        output_items.extend(_parse_message_no_recipient(message, incomplete=incomplete))
+ 
+     return output_items
+-
+-
+-def parser_state_to_response_output(
+-    parser: StreamableParser,
+-    function_tool_names: frozenset[str] | None = None,
+-) -> list[ResponseOutputItem]:
+-    """Extract in-progress response items from incomplete parser state.
+-
+-    Called when the parser has buffered content that hasn't formed a
+-    complete message yet (e.g., generation was cut short).
+-    """
+-    if not parser.current_content:
+-        return []
+-    if parser.current_role != Role.ASSISTANT:
+-        return []
+-    current_recipient = parser.current_recipient
+-    if current_recipient is not None and current_recipient.startswith("browser."):
+-        return []
+-
+-    if current_recipient:
+-        if is_function_recipient(current_recipient, function_tool_names):
+-            rid = random_uuid()
+-            return [
+-                ResponseFunctionToolCall(
+-                    arguments=parser.current_content,
+-                    call_id=f"call_{rid}",
+-                    type="function_call",
+-                    name=extract_function_from_recipient(current_recipient),
+-                    id=f"fc_{rid}",
+-                    status="in_progress",
+-                )
+-            ]
+-        # Built-in MCP tools (python, browser, container)
+-        elif current_recipient in BUILTIN_TOOL_TO_MCP_SERVER_LABEL:
+-            return [
+-                ResponseReasoningItem(
+-                    id=f"rs_{random_uuid()}",
+-                    summary=[],
+-                    type="reasoning",
+-                    content=[
+-                        ResponseReasoningTextContent(
+-                            text=parser.current_content, type="reasoning_text"
+-                        )
+-                    ],
+-                    status=None,
+-                )
+-            ]
+-        # All other recipients are MCP calls
+-        else:
+-            rid = random_uuid()
+-            server_label, tool_name = _parse_mcp_recipient(current_recipient)
+-            return [
+-                McpCall(
+-                    arguments=parser.current_content,
+-                    type="mcp_call",
+-                    name=tool_name,
+-                    server_label=server_label,
+-                    id=f"mcp_{rid}",
+-                    status="in_progress",
+-                )
+-            ]
+-
+-    if parser.current_channel == "commentary":
+-        # Per Harmony format, preambles (commentary with no recipient) are
+-        # intended to be shown to end-users, unlike analysis channel content.
+-        output_text = ResponseOutputText(
+-            text=parser.current_content,
+-            annotations=[],
+-            type="output_text",
+-            logprobs=None,
+-        )
+-        return [
+-            ResponseOutputMessage(
+-                id=f"msg_{random_uuid()}",
+-                content=[output_text],
+-                role="assistant",
+-                status="incomplete",
+-                type="message",
+-            )
+-        ]
+-
+-    if parser.current_channel == "analysis":
+-        return [
+-            ResponseReasoningItem(
+-                id=f"rs_{random_uuid()}",
+-                summary=[],
+-                type="reasoning",
+-                content=[
+-                    ResponseReasoningTextContent(
+-                        text=parser.current_content, type="reasoning_text"
+-                    )
+-                ],
+-                status=None,
+-            )
+-        ]
+-
+-    if parser.current_channel == "final":
+-        output_text = ResponseOutputText(
+-            text=parser.current_content,
+-            annotations=[],  # TODO
+-            type="output_text",
+-            logprobs=None,  # TODO
+-        )
+-        text_item = ResponseOutputMessage(
+-            id=f"msg_{random_uuid()}",
+-            content=[output_text],
+-            role="assistant",
+-            # if the parser still has messages (ie if the generator got cut
+-            # abruptly), this should be incomplete
+-            status="incomplete",
+-            type="message",
+-        )
+-        return [text_item]
+-
+-    return []
+diff --git a/vllm/entrypoints/openai/responses/serving.py b/vllm/entrypoints/openai/responses/serving.py
+index 6746434a0464..72dddf539a42 100644
+--- a/vllm/entrypoints/openai/responses/serving.py
++++ b/vllm/entrypoints/openai/responses/serving.py
+@@ -54,12 +54,10 @@
+     HarmonyContext,
+     ParsableContext,
+     SimpleContext,
+-    StreamingHarmonyContext,
+ )
+ from vllm.entrypoints.openai.responses.harmony import (
+     construct_harmony_previous_input_messages,
+     harmony_to_response_output,
+-    parser_state_to_response_output,
+     response_input_to_harmony,
+ )
+ from vllm.entrypoints.openai.responses.protocol import (
+@@ -462,20 +460,12 @@ async def _create_responses(
+             context: ConversationContext
+             function_tool_names = extract_function_tool_names(request.tools)
+             if self.use_harmony:
+-                if request.stream:
+-                    context = StreamingHarmonyContext(
+-                        messages,
+-                        available_tools,
+-                        function_tool_names,
+-                        response_parser=response_parser,
+-                    )
+-                else:
+-                    context = HarmonyContext(
+-                        messages,
+-                        available_tools,
+-                        function_tool_names,
+-                        response_parser=response_parser,
+-                    )
++                context = HarmonyContext(
++                    messages,
++                    available_tools,
++                    function_tool_names,
++                    response_parser=response_parser,
++                )
+             else:
+                 if envs.VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT:
+                     # This is a feature in development for parsing
+@@ -718,7 +708,7 @@ async def _generate_with_builtin_tools(
+ 
+             # Create inputs for the next turn.
+             # Render the next prompt token ids and update sampling_params.
+-            if isinstance(context, (HarmonyContext, StreamingHarmonyContext)):
++            if isinstance(context, HarmonyContext):
+                 token_ids = context.render_for_completion()
+                 engine_input = tokens_input(token_ids)
+ 
+@@ -814,7 +804,20 @@ async def responses_full_generator(
+         output_messages: ResponseInputOutputMessage | None = None
+         if self.use_harmony:
+             assert isinstance(context, HarmonyContext)
+-            output = self._make_response_output_items_with_harmony(context)
++            output = []
++            harmony_msgs = context.messages[context.num_init_messages :]
++            if harmony_msgs:
++                fn_names = context.function_tool_names
++                for msg in harmony_msgs[:-1]:
++                    output.extend(harmony_to_response_output(msg, fn_names))
++                output.extend(
++                    harmony_to_response_output(
++                        harmony_msgs[-1],
++                        fn_names,
++                        incomplete=context.last_append_flush_status,
++                    )
++                )
++
+             if request.enable_response_messages:
+                 input_messages = context.messages[: context.num_init_messages]
+                 output_messages = context.messages[context.num_init_messages :]
+@@ -1092,21 +1095,6 @@ def _make_response_output_items(
+             )
+         ]
+ 
+-    def _make_response_output_items_with_harmony(
+-        self,
+-        context: HarmonyContext,
+-    ) -> list[ResponseOutputItem]:
+-        output_items: list[ResponseOutputItem] = []
+-        num_init_messages = context.num_init_messages
+-        fn_names = context.function_tool_names
+-        for msg in context.messages[num_init_messages:]:
+-            output_items.extend(harmony_to_response_output(msg, fn_names))
+-        # Handle the generation stopped in the middle (if any).
+-        last_items = parser_state_to_response_output(context.parser, fn_names)
+-        if last_items:
+-            output_items.extend(last_items)
+-        return output_items
+-
+     def _get_harmony_builtin_tool_descriptions(
+         self, request: ResponsesRequest, tool_types: set[str]
+     ) -> dict[str, str | None]:
+@@ -1423,27 +1411,30 @@ async def _process_harmony_streaming_events(
+         state = StreamingState()
+ 
+         async for ctx in result_generator:
+-            assert isinstance(ctx, StreamingHarmonyContext)
++            assert isinstance(ctx, HarmonyContext)
+ 
+             # finish_reason='error' indicates a retryable error
+             self._raise_if_error(ctx.finish_reason, request.request_id)
+ 
+-            if ctx.is_expecting_start():
+-                if len(ctx.parser.messages) > 0:
+-                    previous_item = ctx.parser.messages[-1]
+-                    for event in emit_previous_item_done_events(
+-                        previous_item, state, ctx.function_tool_names
++            for segment in ctx.last_append_segments:
++                if segment.delta:
++                    for event in emit_content_delta_events(
++                        segment, state, ctx.function_tool_names
+                     ):
+                         yield _increment_sequence_number_and_return(event)
+-                state.reset_for_new_item()
+ 
+-            # Stream the output of a harmony message
+-            for event in emit_content_delta_events(ctx, state):
+-                yield _increment_sequence_number_and_return(event)
++                elif completed_message := segment.completed_message:
++                    # TODO: Fix browser emitted as MCP calls
++                    for event in emit_previous_item_done_events(
++                        completed_message, state, ctx.function_tool_names
++                    ):
++                        yield _increment_sequence_number_and_return(event)
+ 
+-            # Stream tool call outputs
+-            for event in emit_tool_action_events(ctx, state, self.tool_server):
+-                yield _increment_sequence_number_and_return(event)
++                    for event in emit_tool_action_events(
++                        completed_message, state, self.tool_server
++                    ):
++                        yield _increment_sequence_number_and_return(event)
++                    state.reset_for_new_item()
+ 
+     async def responses_stream_generator(
+         self,
+diff --git a/vllm/entrypoints/openai/responses/streaming_events.py b/vllm/entrypoints/openai/responses/streaming_events.py
+index 7447347fba66..35021caf2ab8 100644
+--- a/vllm/entrypoints/openai/responses/streaming_events.py
++++ b/vllm/entrypoints/openai/responses/streaming_events.py
+@@ -66,13 +66,13 @@
+     extract_function_from_recipient,
+     is_function_recipient,
+ )
+-from vllm.entrypoints.openai.responses.context import StreamingHarmonyContext
+ from vllm.entrypoints.openai.responses.protocol import (
+     ResponseReasoningPartAddedEvent,
+     ResponseReasoningPartDoneEvent,
+     StreamingResponsesResponse,
+ )
+ from vllm.outputs import CompletionOutput
++from vllm.parser.harmony import Segment
+ from vllm.utils import random_uuid
+ 
+ TOOL_NAME_TO_MCP_SERVER_LABEL: Final[dict[str, str]] = {
+@@ -110,6 +110,7 @@ class StreamingState:
+     def reset_for_new_item(self) -> None:
+         """Reset state when expecting a new output item."""
+         self.current_output_index += 1
++        self.current_content_index = -1
+         self.sent_output_item_added = False
+         self.is_first_function_call_delta = False
+         self.current_call_id = ""
+@@ -558,20 +559,21 @@ def emit_mcp_completion_events(
+ 
+ 
+ def emit_content_delta_events(
+-    ctx: StreamingHarmonyContext,
++    segment: Segment,
+     state: StreamingState,
++    function_tool_names: frozenset[str] | None = None,
+ ) -> list[StreamingResponsesResponse]:
+     """Emit events for content delta streaming based on channel type.
+ 
+     This is a Harmony-specific dispatcher that extracts values from the
+-    Harmony context and delegates to shared leaf helpers.
++    latest append segment and delegates to shared leaf helpers.
+     """
+-    delta = ctx.last_content_delta
++    delta = segment.delta
+     if not delta:
+         return []
+ 
+-    channel = ctx.parser.current_channel
+-    recipient = ctx.parser.current_recipient
++    channel = segment.channel
++    recipient = segment.recipient
+ 
+     if channel in ("final", "commentary") and recipient is None:
+         # Preambles (commentary with no recipient) and final messages
+@@ -580,7 +582,7 @@ def emit_content_delta_events(
+     elif channel == "analysis" and recipient is None:
+         return emit_reasoning_delta_events(delta, state)
+     elif recipient is not None:
+-        fn_names = ctx.function_tool_names
++        fn_names = function_tool_names
+         if is_function_recipient(recipient, fn_names):
+             function_name = extract_function_from_recipient(recipient)
+             return emit_function_call_delta_events(delta, function_name, state)
+@@ -604,6 +606,12 @@ def emit_previous_item_done_events(
+     This is a Harmony-specific dispatcher that extracts values from the
+     Harmony parser's message object and delegates to shared leaf helpers.
+     """
++    if not state.sent_output_item_added and not state.is_first_function_call_delta:
++        # Suppress done events for items had no delta and thus had no
++        # added/in-progress lifecycle events. This is a bug.
++        # TODO: Ensure added/in-progress events are emitted for zero-delta items.
++        return []
++
+     text = previous_item.content[0].text
+     if previous_item.recipient is not None:
+         # Deal with tool call
+@@ -769,47 +777,22 @@ def emit_code_interpreter_completion_events(
+ 
+ 
+ def emit_tool_action_events(
+-    ctx: StreamingHarmonyContext,
++    previous_item: HarmonyMessage,
+     state: StreamingState,
+     tool_server: ToolServer | None,
+ ) -> list[StreamingResponsesResponse]:
+-    """Emit events for tool action turn."""
+-    if not ctx.is_assistant_action_turn() or len(ctx.parser.messages) == 0:
+-        return []
+-
+-    events: list[StreamingResponsesResponse] = []
+-    previous_item = ctx.parser.messages[-1]
+-
++    """Emit events for a completed assistant action turn."""
+     # Handle browser tool
+     if (
+-        tool_server is not None
+-        and tool_server.has_tool("browser")
++        previous_item.author.role == "assistant"
+         and previous_item.recipient is not None
+         and previous_item.recipient.startswith("browser.")
++        and tool_server is not None
++        and tool_server.has_tool("browser")
+     ):
+-        events.extend(emit_browser_tool_events(previous_item, state))
+-
+-    # Handle tool completion
+-    if (
+-        tool_server is not None
+-        and previous_item.recipient is not None
+-        and state.current_item_id is not None
+-        and state.sent_output_item_added
+-    ):
+-        recipient = previous_item.recipient
+-        fn_names = ctx.function_tool_names
+-        if recipient == "python":
+-            events.extend(emit_code_interpreter_completion_events(previous_item, state))
+-        elif recipient.startswith("mcp.") or is_mcp_tool_by_namespace(
+-            recipient, fn_names
+-        ):
+-            events.extend(
+-                emit_mcp_completion_events(
+-                    recipient, previous_item.content[0].text, state
+-                )
+-            )
++        return emit_browser_tool_events(previous_item, state)
+ 
+-    return events
++    return []
+ 
+ 
+ # =====================================================================

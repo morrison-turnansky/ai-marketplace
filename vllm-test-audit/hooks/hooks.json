@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cp \"${CLAUDE_PLUGIN_ROOT}/scripts/output_object.py\" \"${CLAUDE_PROJECT_DIR}/output_object.py\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rm -f \"${CLAUDE_PROJECT_DIR}/output_object.py\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

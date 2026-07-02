@@ -19,7 +19,7 @@ You are the Phase 2 reviewer. You run in an environment with the vLLM repository
 
 ### 1. Read Phase 1 output
 
-Parse the structured evidence blocks from Phase 1. Each candidate has criterion ratings (C1-C4), a classification, and a code snippet.
+Read the CC candidates file (e.g., `../audit-cc.json`). This file contains only candidates that Phase 1 classified as coincidentally correct. Verify each one.
 
 ### 2. Verify each candidate
 
@@ -27,30 +27,9 @@ For each candidate, read the actual test file and walk through this decision seq
 
 1. Identify what two executions or outputs are being compared.
 2. Ask whether PyTorch/vLLM/product behavior **requires** those executions to be bitwise/text identical. If yes → classify as STRONG_CONTRACT with the contract named explicitly.
-3. If no strong contract, ask whether a maintainer has an obvious update path on PyTorch bump (refresh a golden, adjust a tolerance, tune a config). If yes → classify as HAS_UPDATE_PATH.
-4. Only keep it as COINCIDENTALLY_CORRECT when the answer to both is no **and** numeric drift has a realistic chance of changing the test outcome.
+3. Only keep it as COINCIDENTALLY_CORRECT when there is no strong contract **and** numeric drift has a realistic chance of changing the test outcome.
 
-Then challenge Phase 1's four criterion ratings:
-
-**C1 WEAK_ORACLE** — Is the oracle actually weak?
-- Read the test function — did Phase 1 miss that it uses a tolerance-based assertion?
-- Is the "exact equality" comparing within the same execution path?
-- Did Phase 1 misidentify the helper function or assertion type?
-
-**C2 REALISTIC_BREAKAGE** — Would PyTorch changes actually break this?
-- Are both sides using the same CUDA kernels in the same order?
-- Check the test's execution modes — would this need a truly exotic PyTorch change to break?
-
-**C3 NO_UPDATE_PATH** — Is there really no update path?
-- Is there a golden constant in the file that could be refreshed?
-- Could a tolerance be added or adjusted?
-- Check for `EXPECTED_` constants, hardcoded strings, or fixture files
-
-**C4 NO_STRONG_CONTRACT** — Did Phase 1 miss a contract?
-- Check Phase 1's clause citation against the contract's Strong Contracts list
-- Read the test's conftest.py — did Phase 1 miss an autouse fixture?
-- Check for `VLLM_BATCH_INVARIANT` in environment setup Phase 1 may have overlooked
-- Verify that "Not Strong" citations are correctly applied
+Then challenge Phase 1's three criterion ratings (C1-C3).
 
 ### 3. Produce verdict
 
@@ -58,15 +37,53 @@ For each candidate, decide:
 - **AGREE** — Phase 1 classification is correct, verified against source code
 - **RECLASSIFY** — one or more criterion ratings are wrong, provide corrected classification with the evidence you found
 
-### 4. Produce output
+### 4. Write structured output
 
-**You MUST use the exact output format defined in the audit contract.** Do not write free-form prose, markdown headers, decision tree narratives, or bullet-point analysis. Every candidate must be a structured block matching the contract's output format with all fields present.
+After verification, write results as JSON using the output object script. Run this Python code, filling in the fields for each candidate:
 
-After all candidate blocks, end with the Evidence Summary and a summary table.
+```python
+import sys
+sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
+from output_object import ReviewCandidate, ReviewReport
+
+report = ReviewReport(
+    test_files_in_scope=<N>,
+    candidates_analyzed=<N>,
+    phase_1_agreed=<N>,
+    phase_1_reclassified=<N>,
+    candidates=[
+        ReviewCandidate(
+            candidate="test_name",
+            phase_1_classification="COINCIDENTALLY_CORRECT",
+            phase_1_coincidentally_correct=True,
+            review="AGREE",
+            file="tests/path/to/file.py",
+            line=123,
+            comparison="what two executions are compared",
+            oracle="assertion type",
+            helper="helper function or direct assertion",
+            batch_invariant_enabled=False,
+            code_path_verified=False,
+            fixtures="relevant fixtures",
+            c1_weak_oracle="agree — reason",
+            c2_realistic_breakage="agree — reason",
+            c3_no_strong_contract="agree — Not Strong #6: reason",
+            classification="COINCIDENTALLY_CORRECT",
+            coincidentally_correct=True,
+            code_snippet="the assertion code",
+        ),
+        # ... more candidates
+    ],
+)
+
+report.verify_coverage("../audit-cc.json")
+report.write_to_file("../review-cc.json")
+print(f"Wrote {len(report.candidates)} candidates to ../review-cc.json")
+```
 
 ## Guardrails
 
-- **Follow the output format exactly** — no prose, no headers per candidate, no decision tree narratives. Structured blocks only.
+- You MUST write output using the Python output object — do not write prose to stdout
 - Read the actual test files — do not verify based solely on Phase 1's code snippets
 - When you disagree, cite the specific clause Phase 1 should have applied
 - Default to skepticism — look for reasons to REMOVE candidates from the list
