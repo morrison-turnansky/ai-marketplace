@@ -44,6 +44,19 @@ Skill and agent for refactoring PyTorch test files to be device-agnostic, follow
 - Before/after code patterns from real merged PRs
 - Specialist agent with delegation to compile agents for domain-specific test files
 
+### Test Generation Tools
+
+Generic test generation for any framework with automated impact analysis and issue tracker integration.
+
+**Features:**
+- Framework-agnostic (PyTorch, vLLM, TensorFlow, JAX, custom)
+- Multi-tracker support (JIRA, GitHub, GitLab, Linear)
+- Impact analysis with TorchTalk or CodeQL
+- Automated documentation (Excel, Markdown)
+- One-command test generation from issue tracker
+
+👉 **[Full documentation](test-generation/README.md)**
+
 ### Installation
 
 ```bash
@@ -56,6 +69,7 @@ claude plugin install deterministic-hook
 claude plugin install torch-compile
 claude plugin install torchtalk
 claude plugin install pytorch-test-refactor
+claude plugin install test-generation
 ```
 
 ## Using Marketplace Tools

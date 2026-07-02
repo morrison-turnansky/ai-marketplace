@@ -58,6 +58,12 @@
         "url": "https://github.com/TorchedHat/torchtalk.git",
         "ref": "main"
       }
+    },
+    {
+      "name": "test-generation",
+      "description": "Generic test generation for any framework with automated impact analysis. Supports PyTorch, vLLM, TensorFlow, and custom frameworks with JIRA, GitHub, and GitLab integration.",
+      "category": "testing",
+      "source": "./test-generation"
     }
   ]
 }

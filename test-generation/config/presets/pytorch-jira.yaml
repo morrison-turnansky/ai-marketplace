@@ -1,0 +1,68 @@
+# PyTorch Test Generation - JIRA + TorchTalk Configuration
+#
+# Copy this to your project as .test-gen.yaml:
+#   cp config/presets/pytorch-jira.yaml .test-gen.yaml
+#
+# Then edit the paths and run:
+#   /generate-tests AIPCC-12345
+
+framework:
+  name: pytorch
+  source: /home/YOUR_USER/pytorch  # ← EDIT THIS
+  test_framework: pytest
+
+  # PyTorch test file patterns
+  test_file_resolver:
+    type: pattern
+    # Resolves component name to test file
+    # e.g., "cuda" → "test/test_cuda.py"
+    pattern: "test/test_{component}.py"
+
+  # PyTorch naming conventions
+  naming:
+    test_class: "Test{Component}"
+    test_function: "test_{feature}_{scenario}"
+
+  # Standard PyTorch test imports
+  imports:
+    - "import torch"
+    - "from torch.testing._internal.common_utils import TestCase"
+    - "from torch.testing._internal.common_device_type import instantiate_device_type_tests"
+
+tracker:
+  type: jira
+  url: https://YOUR_COMPANY.atlassian.net  # ← EDIT THIS
+  credentials: ~/.config/test-gen/credentials.yaml
+  project: AIPCC  # ← EDIT THIS if different
+
+generation:
+  count: 5-6
+  output_dir: /tmp/tests
+  test_file_pattern: "test_{component}.py"
+  include_edge_cases: true
+  include_regression: true
+
+analyzer:
+  type: torchtalk
+  config: ~/.config/torchtalk/config.toml
+  trace_depth: 5
+  risk_levels: [low, medium, high]
+
+documentation:
+  formats: [excel, markdown]
+  include_scenarios: true
+
+upload:
+  enabled: true
+  attachments: [excel]
+  comments: [tests_summary, impact_analysis]
+  labels: [automated-tests, pytorch]
+
+# Workflow phases (comment out to skip)
+workflow:
+  phases:
+    - fetch_issue
+    - generate_tests
+    - impact_analysis
+    - documentation
+    - upload

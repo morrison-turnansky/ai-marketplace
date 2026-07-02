@@ -1,0 +1,67 @@
+# vLLM Test Generation - GitHub + TorchTalk Configuration
+#
+# Copy this to your project as .test-gen.yaml:
+#   cp config/presets/vllm-github.yaml .test-gen.yaml
+#
+# Then edit the paths and run:
+#   /generate-tests owner/repo#12345
+
+framework:
+  name: vllm
+  source: /home/YOUR_USER/vllm  # ← EDIT THIS
+  test_framework: pytest
+
+  # vLLM test file patterns
+  test_file_resolver:
+    type: pattern
+    # Resolves component to test file
+    # e.g., "scheduler" → "tests/core/test_scheduler.py"
+    pattern: "tests/{module}/test_{component}.py"
+
+  # vLLM naming conventions
+  naming:
+    test_class: "Test{Component}"
+    test_function: "test_{feature}_{scenario}"
+
+  # Standard vLLM test imports
+  imports:
+    - "import pytest"
+    - "import vllm"
+    - "from vllm.config import ModelConfig, ParallelConfig"
+
+tracker:
+  type: github
+  url: https://api.github.com
+  credentials: ~/.config/test-gen/credentials.yaml
+  project: vllm-project/vllm  # ← EDIT THIS if different
+
+generation:
+  count: 4-6
+  output_dir: /tmp/vllm_tests
+  test_file_pattern: "test_{component}.py"
+  include_edge_cases: true
+  include_regression: true
+
+analyzer:
+  type: torchtalk
+  config: ~/.config/torchtalk/config.toml
+  trace_depth: 5
+  risk_levels: [low, medium, high]
+
+documentation:
+  formats: [markdown]  # GitHub works better with markdown
+  include_scenarios: true
+
+upload:
+  enabled: true
+  attachments: [markdown]
+  comments: [tests_summary, impact_analysis]
+  labels: [automated-tests, vllm, testing]
+
+workflow:
+  phases:
+    - fetch_issue
+    - generate_tests
+    - impact_analysis
+    - documentation
+    - upload

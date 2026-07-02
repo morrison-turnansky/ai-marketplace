@@ -1,0 +1,26 @@
+{
+  "name": "test-generation",
+  "displayName": "Test Generation",
+  "version": "1.0.0",
+  "description": "Generic test generation for any framework with automated impact analysis and issue tracker integration. Generate comprehensive test cases from JIRA, GitHub, or GitLab issues with support for PyTorch, vLLM, TensorFlow, and custom frameworks.",
+  "skills": "./skills/",
+  "agents": ["./agents/"],
+  "author": {
+    "name": "Kumar Tanmay"
+  },
+  "homepage": "https://github.com/TorchedHat/ai-marketplace",
+  "keywords": [
+    "testing",
+    "test-generation",
+    "pytorch",
+    "vllm",
+    "tensorflow",
+    "jira",
+    "github",
+    "gitlab",
+    "torchtalk",
+    "impact-analysis",
+    "automation",
+    "quality-assurance"
+  ]
+}
