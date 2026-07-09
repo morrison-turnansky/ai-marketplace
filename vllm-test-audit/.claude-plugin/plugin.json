@@ -6,7 +6,8 @@
   "skills": "./skills/",
   "agents": [
     "./agents/audit-agent.md",
-    "./agents/review-agent.md"
+    "./agents/review-agent.md",
+    "./agents/coordinator-agent.md"
   ],
   "author": {
     "name": "compile"
