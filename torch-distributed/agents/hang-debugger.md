@@ -39,8 +39,9 @@ Use the classification table from `distributed-hang-diagnosis` to determine the 
 | Hangs at `barrier()`, works with Gloo | `barrier_deadlock` |
 | Hangs after another rank exits/crashes | `p2p_hang_after_abort` |
 | Hangs at specific training step | `collective_mismatch` |
-| Hangs during `loss.backward()` with DDP | `unused_parameter` |
-| Intermittent hang | `nccl_timeout` |
+| Hangs or errors during `loss.backward()` with DDP | `unused_parameter` |
+| Intermittent hang with NCCL timeout error | `nccl_timeout` |
+| FSDP hang during forward with dynamic model | `forward_order_violation` |
 
 ### 3. Collect Evidence
 

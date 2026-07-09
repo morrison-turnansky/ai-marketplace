@@ -28,7 +28,7 @@ def dump_traces(signum, frame):
 
 signal.signal(signal.SIGUSR1, dump_traces)
 
-rank = int(os.environ["LOCAL_RANK"])
+rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
 dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(seconds=30))
 

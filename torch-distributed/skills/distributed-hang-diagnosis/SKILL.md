@@ -304,12 +304,14 @@ sampler = DistributedSampler(dataset, drop_last=True)
 
 ### Pattern 5: DDP Unused Parameters
 
-**Symptom**: Hang during `loss.backward()` on first iteration.
+**Symptom** (version-dependent):
+- **PyTorch < 2.14**: Hang during `loss.backward()` on first iteration — DDP waits for allreduce on gradients that are never computed.
+- **PyTorch >= 2.14**: `RuntimeError` on the second iteration's forward pass — DDP detects the mismatch and raises instead of hanging.
 
 **Cause**: `find_unused_parameters=False` (default) but some parameters are not used in forward.
 
 ```python
-# Hangs if self.optional is skipped
+# Hangs (< 2.14) or errors (>= 2.14) if self.optional is skipped
 model = DDP(model)
 
 # Fix
@@ -317,9 +319,60 @@ model = DDP(model, find_unused_parameters=True)
 ```
 
 **Verification evidence** — all of these must be true before the fix is confirmed:
-- [ ] `loss.backward()` completes on first iteration
+- [ ] Training completes multiple iterations without hang or `RuntimeError`
 - [ ] `TORCH_DISTRIBUTED_DEBUG=DETAIL` identifies which parameters were unused (check these are intentionally unused)
 - [ ] No performance regression from `find_unused_parameters=True` (compare step time before/after)
+
+### Pattern 6: NCCL Timeout
+
+**Symptom**: Intermittent hang during training. Eventually produces `Watchdog caught collective operation timeout` error.
+
+**Root cause**: A collective operation takes longer than the watchdog timeout. Unlike deadlocks, the operation is actually running but blocked — typically by network failure, GPU error, or a slow rank.
+
+**Distinguishing from deadlocks**: Flight recorder shows all ranks with `state=started` for the **same** operation at the **same** `collective_seq_id`. In a deadlock, ranks show different operations or different seq IDs.
+
+**Fix**: Diagnose the underlying infrastructure issue:
+```bash
+# Check GPU health
+nvidia-smi -q | grep -E "ECC|Retired|Temperature"
+
+# Check network (multi-node)
+nccl-tests/build/all_reduce_perf -b 8 -e 128M -f 2 -g 1
+
+# If a single rank is slow, identify it via per-rank timing
+NCCL_DEBUG=INFO TORCH_DISTRIBUTED_DEBUG=DETAIL torchrun ... 2>&1 | tee debug.log
+```
+
+**Verification evidence** — all of these must be true before the fix is confirmed:
+- [ ] Flight recorder confirms all ranks were on the same operation (not a mismatch)
+- [ ] `nvidia-smi` shows no GPU errors, ECC issues, or thermal throttling
+- [ ] Network bandwidth test (`nccl-tests`) shows expected throughput
+- [ ] Training completes without timeout after resolving the infrastructure issue
+
+### Pattern 7: FSDP Forward Order Violation
+
+**Symptom**: FSDP hang during forward pass. May produce `forward order violation` error.
+
+**Root cause**: FSDP expects modules to execute in the same order every iteration. Dynamic model architectures (e.g., conditional layers, early exit) violate this assumption.
+
+**Common causes**:
+```python
+# Dynamic forward — module order changes per iteration
+def forward(self, x):
+    if self.training and random.random() > 0.5:
+        x = self.dropout_layer(x)  # WRONG: not called every iteration
+    return self.output(x)
+
+# Fix: use consistent forward order, control behavior inside the module
+def forward(self, x):
+    x = self.dropout_layer(x)  # always called; dropout handles train/eval internally
+    return self.output(x)
+```
+
+**Verification evidence** — all of these must be true before the fix is confirmed:
+- [ ] FSDP forward pass completes on all ranks for multiple iterations
+- [ ] No `forward order violation` error in logs
+- [ ] Module execution order is deterministic across iterations (verify with `TORCH_DISTRIBUTED_DEBUG=DETAIL`)
 
 ## Minimal Reproducer Template
 
