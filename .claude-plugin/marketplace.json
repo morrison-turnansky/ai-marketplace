@@ -33,9 +33,14 @@
     },
     {
       "name": "vllm-test-audit",
-      "description": "Two-phase test oracle auditor for vLLM. Phase 1 (audit-pr) scopes to PR/directory, runs candidate finder, produces structured evidence. Phase 2 (test-audit-review) independently classifies via decision tree.",
+      "description": "Two-phase test oracle auditor for vLLM. Phase 1 (audit-agent) classifies test assertions, Phase 2 (review-agent) adversarially verifies.",
       "category": "testing",
-      "source": "./vllm-test-audit"
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/TorchedHat/vllm-eval-harness.git",
+        "path": "vllm-test-audit",
+        "ref": "main"
+      }
     },
     {
       "name": "ci-runner-demo",
@@ -56,6 +61,16 @@
       "source": {
         "source": "url",
         "url": "https://github.com/TorchedHat/torchtalk.git",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "vllm-eval-harness",
+      "description": "Evaluation harness for vllm-test-audit with audit-contract skill, golden dataset, and F1/cost judges.",
+      "category": "testing",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/TorchedHat/vllm-eval-harness.git",
         "ref": "main"
       }
     }
