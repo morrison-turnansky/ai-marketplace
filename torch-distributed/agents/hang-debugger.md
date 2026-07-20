@@ -75,7 +75,9 @@ Compare the evidence against the patterns in `distributed-hang-diagnosis`:
 - Pattern 2: P2P Ops Hang After Communicator Abort (watchdog blind spot)
 - Pattern 3: Init Timeout Due to Store (timeout mismatch)
 - Pattern 4: Collective Mismatch (conditional collectives, uneven batches)
-- Pattern 5: DDP Unused Parameters
+- Pattern 5: DDP Unused Parameters (version-dependent: hang < 2.14, RuntimeError >= 2.14)
+- Pattern 6: NCCL Timeout (infrastructure issue — GPU error, network, slow rank)
+- Pattern 7: FSDP Forward Order Violation (dynamic model architecture)
 
 ### 5. Propose Fix
 
@@ -87,7 +89,7 @@ Provide the specific code or configuration change to resolve the hang. Include:
 ### 6. Verify
 
 Help the user verify the fix works:
-- Suggest running with reduced timeout (`NCCL_TIMEOUT=120000`) for faster feedback
+- Suggest running with reduced timeout (`dist.init_process_group("nccl", timeout=timedelta(seconds=120))`) for faster feedback
 - Confirm the training progresses past the hang point
 - Check that no new warnings appear in `NCCL_DEBUG=INFO` output
 
@@ -106,7 +108,7 @@ Return your findings as structured JSON:
   "pytorch_issue": "https://github.com/pytorch/pytorch/issues/129749",
   "steps": [
     "1. Add device_id parameter to dist.init_process_group()",
-    "2. Re-run with NCCL_TIMEOUT=120000 to verify fix",
+    "2. Re-run with timeout=timedelta(seconds=120) in init_process_group to verify fix",
     "3. Confirm all ranks pass barrier and print GOOD"
   ]
 }
@@ -122,7 +124,7 @@ Before proposing a fix, verify you are NOT making any of these shortcuts. If you
 | "This is most likely a network issue" | Network issues cause timeouts, not deadlocks. Classify the hang type first. |
 | "The stack trace shows the problem" | Stack traces show WHERE, not WHY. Compare flight recorder `collective_seq_id` across ranks. |
 | "This matches Pattern N" | Check at least 2 distinguishing observations. Multiple patterns share symptoms. |
-| "Increasing the timeout should fix this" | Increasing timeout masks the bug. Reduce it for faster feedback and fix the root cause. |
+| "Increasing the timeout should fix this" | Increasing timeout masks the bug. Reduce it (`timeout=timedelta(seconds=120)`) for faster feedback and fix the root cause. |
 | "It works on rank 0 so the fix is correct" | Verify ALL ranks. A fix on one rank can shift the hang to another. |
 
 ## Verification Requirements
@@ -132,7 +134,7 @@ A fix is NOT confirmed until you have collected concrete evidence. Do not report
 **Minimum evidence for any fix:**
 1. All ranks print past the former hang point
 2. `NCCL_DEBUG=INFO` output shows no warnings or errors on any rank
-3. Re-run completes with reduced timeout (`NCCL_TIMEOUT=120000`)
+3. Re-run completes with reduced timeout (`dist.init_process_group("nccl", timeout=timedelta(seconds=120))`)
 
 **Per-pattern evidence** is documented in `distributed-hang-diagnosis` SKILL.md under each pattern's "Verification evidence" checklist. Walk through every checkbox before reporting the fix.
 
@@ -152,7 +154,7 @@ If you cannot collect verification evidence (e.g., no GPU access, remote environ
 - Load the `distributed-hang-diagnosis` skill before diagnosing
 - Check if the issue is NCCL-specific by suggesting a Gloo backend test
 - Provide the specific PyTorch issue link when matching a known pattern
-- Suggest reducing timeouts (`NCCL_TIMEOUT=120000`) for faster debugging iterations
+- Suggest reducing timeouts (`dist.init_process_group("nccl", timeout=timedelta(seconds=120))`) for faster debugging iterations
 - Note when a bug is fixed in newer PyTorch versions
 - Walk through the anti-rationalization table before proposing a fix
 - Collect verification evidence per the pattern's checklist before reporting success

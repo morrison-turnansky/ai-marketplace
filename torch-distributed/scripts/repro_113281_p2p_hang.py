@@ -29,8 +29,7 @@ def dump_traces(signum, frame):
 signal.signal(signal.SIGUSR1, dump_traces)
 
 rank = int(os.environ["RANK"])
-world_size = int(os.environ["WORLD_SIZE"])
-dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(seconds=30))
+dist.init_process_group("nccl", timeout=timedelta(seconds=30))
 
 t = torch.zeros(5, device=f"cuda:{rank}")
 

@@ -65,8 +65,12 @@ if [ ! -f "$INDICES/c10d/steering.json" ]; then
         echo "Indexing c10d module (one-time setup)..."
         mkdir -p "$INDICES"
         cd "$PYTORCH_SRC"
-        repomap ./torch/distributed --repo-name c10d --verbose > /dev/null 2>&1 && \
-            echo "  c10d indexed" || echo "  c10d indexing failed (non-blocking)"
+        if command -v repomap &>/dev/null; then
+            repomap ./torch/distributed --repo-name c10d --verbose > /dev/null 2>&1 && \
+                echo "  c10d indexed" || echo "  c10d indexing failed (non-blocking)"
+        else
+            echo "  repomap not found, skipping c10d indexing (non-blocking)"
+        fi
     else
         echo "PyTorch source not found. Set PYTORCH_PATH for API lookups."
     fi

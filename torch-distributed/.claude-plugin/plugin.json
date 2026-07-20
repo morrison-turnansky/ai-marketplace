@@ -19,12 +19,5 @@
     "deadlock",
     "hang",
     "debugging"
-  ],
-  "mcpServers": {
-    "steering": {
-      "command": "acp-steering-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
+  ]
 }

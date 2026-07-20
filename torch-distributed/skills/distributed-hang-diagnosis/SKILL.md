@@ -40,7 +40,7 @@ Application: dist.init_process_group(timeout=600s)
     ↓
 Store: TCPStore timeout (default 300s / 5 min)
     ↓
-NCCL watchdog: NCCL_TIMEOUT (default 600000ms / 10 min)
+NCCL watchdog: opTimeout_ (default 600s / 10 min, set via init_process_group(timeout=))
     ↓
 NCCL async error handling
 ```
@@ -63,8 +63,8 @@ The store timeout and NCCL watchdog timeout are independent. A store timeout fir
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `NCCL_TIMEOUT` | `600000` (10 min) | NCCL watchdog timeout in milliseconds |
-| `init_process_group(timeout=)` | `600s` (10 min) | Init and store timeout |
+| `init_process_group(timeout=timedelta(seconds=600))` | `600s` (10 min) | Sets NCCL watchdog timeout and store timeout together |
+| `dist.set_timeout(timedelta(seconds=120))` | — | Change watchdog timeout at runtime without restart |
 | `TORCH_NCCL_BLOCKING_WAIT` | `0` | Set `1` to make NCCL errors synchronous (better stack traces) |
 | `NCCL_ASYNC_ERROR_HANDLING` | `1` | Async error detection via watchdog |
 
@@ -76,7 +76,8 @@ The flight recorder is a circular buffer in `ProcessGroupNCCL` that records coll
 
 ```bash
 # Control buffer size (default ~2000 entries, 0 to disable)
-TORCH_NCCL_TRACE_BUFFER_SIZE=2000 torchrun ...
+# TORCH_FR_BUFFER_SIZE is the current name; TORCH_NCCL_TRACE_BUFFER_SIZE still works but is deprecated
+TORCH_FR_BUFFER_SIZE=2000 torchrun ...
 ```
 
 ### Dumping Traces
@@ -182,7 +183,7 @@ Agents frequently shortcut the diagnostic process. These are common rationalizat
 | "I'll skip the flight recorder, the stack trace is enough" | Stack traces show WHERE the hang is, not WHY. Flight recorder `collective_seq_id` comparison across ranks reveals the actual mismatch. | Dump flight recorder traces and compare across at least 2 ranks before proposing a fix. |
 | "This looks like Pattern X, I'll apply the fix directly" | Multiple patterns share symptoms. Barrier deadlock and init timeout both hang at startup. P2p hang and collective mismatch both hang mid-training. | Complete the classification table. Check at least 2 distinguishing observations before matching a pattern. |
 | "The fix worked on one rank, we're done" | Distributed bugs are inherently multi-rank. A fix that resolves rank 0's symptom may shift the hang to another rank or create a new mismatch. | Verify ALL ranks complete the operation. Check `NCCL_DEBUG=INFO` output shows no warnings on any rank. |
-| "I'll just increase the timeout" | Increasing timeout masks the bug — the operation will still hang, just later. Timeouts are a diagnostic tool, not a fix. | Reduce the timeout (`NCCL_TIMEOUT=120000`) for faster feedback. Fix the root cause. |
+| "I'll just increase the timeout" | Increasing timeout masks the bug — the operation will still hang, just later. Timeouts are a diagnostic tool, not a fix. | Reduce the timeout (`dist.init_process_group("nccl", timeout=timedelta(seconds=120))`) for faster feedback. Fix the root cause. |
 | "find_unused_parameters=True fixes DDP hangs" | It fixes unused-parameter hangs but adds overhead and masks model bugs. If parameters are unexpectedly unused, the model may be silently broken. | Investigate which parameters are unused and why. Use `find_unused_parameters=True` only if the unused parameters are intentional. |
 
 ## Known Hang Patterns
@@ -206,13 +207,13 @@ dist.all_reduce(t)
 dist.barrier()
 ```
 
-**Note**: Fixed in PyTorch >= 2.8. Newer PyTorch warns: `"using GPU X as device used by this process is currently unknown"` — pass `device_id` to silence and fix.
+**Note**: Mitigated by passing `device_id` (PyTorch 2.4+). [pytorch/pytorch#129749](https://github.com/pytorch/pytorch/issues/129749) remains open. Newer PyTorch warns: `"using GPU X as device used by this process is currently unknown"` — pass `device_id` to silence the warning and avoid the race.
 
 **Verification evidence** — all of these must be true before the fix is confirmed:
 - [ ] All ranks print past the barrier in stdout
 - [ ] `NCCL_DEBUG=INFO` shows `ncclCommInitRank` completing on every rank (not just rank 0)
 - [ ] No `"device used by this process is currently unknown"` warning in logs
-- [ ] Re-run with `NCCL_TIMEOUT=120000` (2 min) — completes without timeout
+- [ ] Re-run with `dist.init_process_group("nccl", timeout=timedelta(seconds=120))` — completes without timeout
 
 *Reference: [pytorch/pytorch#129749](https://github.com/pytorch/pytorch/issues/129749)*
 

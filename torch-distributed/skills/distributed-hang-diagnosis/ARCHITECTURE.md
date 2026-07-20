@@ -330,7 +330,7 @@ Layer 1: Store Timeout
 
 Layer 2: NCCL Watchdog Timeout (opTimeout_)
     Where: WorkNCCL::checkTimeout() called by Watchdog::runLoop()
-    Default: 600s (10 min), controlled by NCCL_TIMEOUT env var
+    Default: 600s (10 min), set via dist.init_process_group(timeout=) or dist.set_timeout()
     Fires: For work in workMetaList_ that exceeds timeout
     Error: "Watchdog caught collective operation timeout"
 
@@ -351,7 +351,7 @@ Layer 3: HeartbeatMonitor
 
 ### Implementation
 
-The flight recorder is a circular buffer inside `ProcessGroupNCCL` that records collective operations. Controlled by `TORCH_NCCL_TRACE_BUFFER_SIZE` (default ~2000 entries).
+The flight recorder is a circular buffer inside `ProcessGroupNCCL` that records collective operations. Controlled by `TORCH_FR_BUFFER_SIZE` (default ~2000 entries; `TORCH_NCCL_TRACE_BUFFER_SIZE` is the deprecated alias).
 
 ### Dump Mechanisms
 

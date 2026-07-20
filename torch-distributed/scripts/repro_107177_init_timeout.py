@@ -14,7 +14,7 @@ import torch
 import torch.distributed as dist
 from datetime import timedelta
 
-rank = int(os.environ.get("RANK", 0))
+rank = int(os.environ["RANK"])
 
 if rank == 0:
     print(f"Rank 0: sleeping 40s to simulate straggler...")
