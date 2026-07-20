@@ -2,7 +2,7 @@
 
 ## Overview
 
-Multi-plugin marketplace for PyTorch development tools. Hosts multiple Claude Code plugins including torch.compile debugging tools and plugin authoring utilities.
+Multi-plugin marketplace for PyTorch development tools. Hosts multiple Claude Code plugins including torch.compile debugging, distributed training debugging, and plugin authoring utilities.
 
 ## Project Structure
 
@@ -29,6 +29,18 @@ ai-marketplace/
 │   │   └── test-refactor/   # test-refactor skill with supporting docs
 │   └── agents/
 │       └── test-refactor-agent.md
+├── torch-distributed/       # PyTorch distributed training debugging plugin (minimal)
+│   ├── .claude-plugin/
+│   │   └── plugin.json      # Plugin configuration
+│   ├── agents/
+│   │   └── hang-debugger.md # Diagnostic agent (loads skill, diagnoses, fixes)
+│   ├── skills/
+│   │   └── distributed-hang-diagnosis/SKILL.md  # Reference: hang patterns, NCCL arch
+│   ├── hooks/
+│   │   └── hooks.json       # SessionStart hook
+│   ├── scripts/
+│   │   └── ensure-setup.sh  # Auto-setup (steering MCP, c10d index)
+│   └── settings.json        # MCP server configurations
 ├── ai-writer/               # Plugin authoring tools
 │   ├── .claude-plugin/
 │   │   └── plugin.json
@@ -103,6 +115,11 @@ callable_agents:
 - 4 agents: aot-expert, compile-debug, dynamo-expert, inductor-expert
 - 1 MCP server: steering (acp-steering-mcp)
 
+**torch-distributed:**
+- 1 skill: distributed-hang-diagnosis (hang patterns, NCCL architecture, debugging tools reference)
+- 1 agent: hang-debugger (loads skill, diagnoses hang, proposes fix)
+- 1 MCP server: steering (acp-steering-mcp, indexes torch/distributed)
+
 **ai-writer:**
 - 3 skills: plugin-writer, skill-writer, agent-writer
 - Tools for creating and managing Claude Code plugins, skills, and agents
@@ -117,16 +134,19 @@ callable_agents:
 ### 1. Multi-Plugin Marketplace
 Multiple plugins in one repository using subdirectory structure. Each plugin is self-contained with its own configuration, skills, agents, and MCP servers.
 
-### 2. Direct Log Interpretation (torch-compile)
-Claude reads TORCH_LOGS output and debug files directly with skill guidance. No intermediate parsing - full context available for better analysis.
+### 2. Direct Log Interpretation
+Claude reads TORCH_LOGS output, NCCL_DEBUG logs, and debug files directly with skill guidance. No intermediate parsing - full context available for better analysis.
 
-### 3. Auto-Discovery
+### 3. Start Minimal, Iterate (torch-distributed)
+The distributed plugin starts with a single focused skill (hang diagnosis) validated against real PyTorch issues. Additional skills and agents will be added as the distributed team reaches consensus on what's needed.
+
+### 4. Auto-Discovery
 Skills and agents are discovered automatically from standard directories. No manual listing in plugin.json needed.
 
-### 4. Portability
-No hardcoded paths. Relative paths for local plugins. PyTorch source location auto-detected or configurable via `PYTORCH_SRC` environment variable.
+### 5. Portability
+No hardcoded paths. Relative paths for local plugins. PyTorch source location auto-detected or configurable via `PYTORCH_PATH` environment variable.
 
-### 5. Self-Contained
+### 6. Self-Contained
 All dependencies installed automatically via SessionStart hooks. No manual setup required.
 
 ## Documentation

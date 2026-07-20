@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "steering": {
+      "command": "acp-steering-mcp",
+      "env": {
+        "STEERING_REPOS_PATH": "~/.acp/repos"
+      }
+    }
+  }
+}

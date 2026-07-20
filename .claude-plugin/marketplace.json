@@ -14,6 +14,12 @@
       "source": "./torch-compile"
     },
     {
+      "name": "torch-distributed",
+      "description": "PyTorch distributed training debugging tools and workflow automation for c10d, DDP, FSDP, and DTensor",
+      "category": "development",
+      "source": "./torch-distributed"
+    },
+    {
       "name": "ai-writer",
       "description": "Tools for creating and managing Claude Code plugins, skills, and agents",
       "category": "development",
