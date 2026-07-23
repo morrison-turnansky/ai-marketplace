@@ -18,7 +18,9 @@ Refactor a PyTorch test file to be device-agnostic, following the community test
 
 PyTorch has 1,205+ test files and 560,000+ test cases. The test refactoring initiative decouples tests from specific hardware so new backends can reuse the test suite. Every test class gets a `hw_classification` attribute and must follow the single-responsibility principle — no mixing categories within a class.
 
-See [CLASSIFICATION-GUIDE.md](CLASSIFICATION-GUIDE.md) for the full decision tree and [PATTERNS.md](PATTERNS.md) for before/after code examples.
+See [CLASSIFICATION-GUIDE.md](CLASSIFICATION-GUIDE.md) for the full decision tree, [PATTERNS.md](PATTERNS.md) for before/after code examples, and [PRECEDENTS.md](PRECEDENTS.md) for reviewer corrections from merged PRs.
+
+**Before classifying, check [PRECEDENTS.md](PRECEDENTS.md) for corrections in your file's domain.** PRECEDENTS.md is the sole source of reviewer guidance — apply any corrections that match your current task. Key references: RFC overview [#174469](https://github.com/pytorch/pytorch/issues/174469), classification RFC [#185142](https://github.com/pytorch/pytorch/issues/185142), hw_classification implementation [#186918](https://github.com/pytorch/pytorch/pull/186918), tracking issue [#185590](https://github.com/pytorch/pytorch/issues/185590).
 
 ## Core Principles
 
@@ -245,6 +247,30 @@ Before submitting the PR:
 - [ ] Tests pass on CUDA (if applicable)
 - [ ] PR title follows format: `[TEST] Refactor <filename> with hw_classification`
 - [ ] PR body includes test plan with command and output
+
+**Step 7 — Generate PR description:**
+
+Produce a ready-to-use PR description following this template:
+
+```markdown
+## Summary
+Apply hardware classification structure following [#186918](https://github.com/pytorch/pytorch/pull/186918) guidelines.
+
+Changes:
+- <list each class rename/split/classification change, e.g.:>
+- Rename TestFoo → TestFooGeneric (hw_classification = GENERIC) — N CPU-only tests
+- Split TestBar into TestBarDeviceGeneric (DEVICE_GENERIC, M tests) + TestBarCUDA (CUDA, K tests)
+- Add hw_classification = DEVICE_GENERIC to TestBaz (no structural changes)
+
+## Test Plan
+**<TEST_CONFIG=cuda python test/<file>.py>**
+Ran X tests in Y.YYYs — OK (skipped=Z)
+
+## Dependencies
+<only if this PR depends on another unmerged PR, add: Depends on #<number>>
+```
+
+Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassification` enum changes are pending, or if a prior N/N series PR must land first). Only add `Depends on #<number>` lines when there is an actual dependency. Omit the section entirely if there are none.
 
 ## Common Pitfalls
 

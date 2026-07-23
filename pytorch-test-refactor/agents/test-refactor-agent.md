@@ -45,7 +45,7 @@ When you encounter test files in domain-specific modules, **delegate to speciali
 
 Follow the `test-refactor` skill exactly. The four phases are:
 
-1. **Analyze** — Read the file, inventory classes and methods, scan for device patterns
+1. **Analyze** — Read the file, inventory classes and methods, scan for device patterns. Check [PRECEDENTS.md](../skills/test-refactor/PRECEDENTS.md) for known reviewer corrections and apply any that match your current task.
 2. **Classify** — Apply the decision tree, delegate to specialists when uncertain
 3. **Refactor** — Split classes, add hw_classification, convert device references
 4. **Verify** — Run tests, confirm counts, check classification coverage
@@ -75,7 +75,9 @@ Return a structured summary after completing the refactoring:
     {"agent": "inductor-expert-agent", "question": "Is test_triton_kernel device-specific?", "answer": "Yes, Triton is CUDA-specific"}
   ],
   "notes": "<any issues, edge cases, or recommendations>",
-  "pr_title": "[TEST] Refactor <filename> with hw_classification"
+  "pr_title": "[TEST] Refactor <filename> with hw_classification",
+  "pr_description": "<generated PR description with summary, test plan, and Depends on #<number> if applicable>",
+  "depends_on": []
 }
 ```
 
