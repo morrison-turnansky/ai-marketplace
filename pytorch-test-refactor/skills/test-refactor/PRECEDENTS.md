@@ -13,12 +13,14 @@ This file is the sole source of reviewer guidance. It is refreshed at a regular 
 
 Do not classify `@onlyCPU` tests as GENERIC automatically.
 Many are historical — the test logic may be device-agnostic.
-Examine the actual logic first. If it works on accelerators, keep it in DEVICE_GENERIC and remove the decorator. Defer to follow-up PRs if uncertain.
+Examine the actual logic first. If it works on accelerators, keep it in ACCELERATOR and remove the decorator. Defer to follow-up PRs if uncertain.
 Why: @fffrog rejected auto-classification in [#185881](https://github.com/pytorch/pytorch/pull/185881).
 
-Do not classify a test as MULTI_ACCELERATOR based on class name alone.
-A class with `world_size = 1` or `@skip_if_lt_x_gpu(1)` that runs on a single GPU should be CUDA, not MULTI_ACCELERATOR_CUDA. Match classification to actual runtime requirements.
-Why: @mansiag05 caught misclassification in [#190082](https://github.com/pytorch/pytorch/pull/190082).
+Distributed tests using fake process groups or `MultiThreadedTestCase` are GENERIC, not ACCELERATOR.
+If setUp creates a fake PG (`init_fake_pg`, `FakeProcessGroup`) or the test uses only CPU threads for collectives, classify as GENERIC — there is no real multi-device setup.
+  ✗ `TestMultiThreadedDTensorOps` → ACCELERATOR (it uses `dist.*` calls)
+  ✓ `TestMultiThreadedDTensorOps` → GENERIC (collectives run between threads on one CPU process)
+Why: all 5 classes in [#190830](https://github.com/pytorch/pytorch/pull/190830) were classified GENERIC for this reason.
 
 ## Refactor
 
@@ -31,7 +33,7 @@ Why: @albanD caught this in [#185802](https://github.com/pytorch/pytorch/pull/18
 Do not rename classes that aren't being split.
 Just add `hw_classification`. Only rename when splitting into multiple classes.
   ✗ `TestReductions` → `TestReductionsDevice` (unnecessary churn)
-  ✓ `TestReductions` + `hw_classification = HardwareClassification.DEVICE_GENERIC`
+  ✓ `TestReductions` + `hw_classification = HardwareClassification.ACCELERATOR`
 Why: @fffrog rejected gratuitous renames in [#185881](https://github.com/pytorch/pytorch/pull/185881).
 
 Do not use `instantiate_device_type_tests` for device-specific classes.

@@ -2,7 +2,7 @@
   "name": "pytorch-test-refactor",
   "displayName": "PyTorch Test Refactor",
   "version": "1.0.0",
-  "description": "Refactor PyTorch test files to be device-agnostic with hardware classification. Guides analysis, classification (GENERIC/DEVICE_GENERIC/DEVICE_SPECIFIC/MULTI_DEVICE_GENERIC/MULTI_DEVICE_SPECIFIC), class splitting, and verification.",
+  "description": "Refactor PyTorch test files to be device-agnostic with hardware classification. Guides analysis, classification (GENERIC/ACCELERATOR/CPU/CUDA/XPU/MPS), class splitting, and verification.",
   "skills": "./skills/",
   "agents": [
     "./agents/test-refactor-agent.md"

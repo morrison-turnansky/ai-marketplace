@@ -52,7 +52,7 @@ if __name__ == "__main__":
 
 ---
 
-## Pattern 2: Converting a Hardcoded CUDA Test to DEVICE_GENERIC
+## Pattern 2: Converting a Hardcoded CUDA Test to ACCELERATOR
 
 Tests that hardcode `"cuda"` but test behavior that works on any device.
 
@@ -112,8 +112,8 @@ class TestBinaryOpsGeneric(TestCase):
         self.assertEqual(z.shape, (3, 3))
 
 
-class TestBinaryOpsDeviceGeneric(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+class TestBinaryOpsAccelerator(DeviceTypeTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
 
     def test_add_on_device(self):
         x = torch.randn(3, 3, device=self.device_type)
@@ -129,14 +129,14 @@ class TestBinaryOpsDeviceGeneric(DeviceTypeTestBase):
         self.assertEqual(z.shape, (3, 3))
 
 
-instantiate_device_type_tests(TestBinaryOpsDeviceGeneric, globals())
+instantiate_device_type_tests(TestBinaryOpsAccelerator, globals())
 
 if __name__ == "__main__":
     run_tests()
 ```
 
 **What changed:**
-- Split into GENERIC (CPU-only `test_add_cpu`) and DEVICE_GENERIC (device tests)
+- Split into GENERIC (CPU-only `test_add_cpu`) and ACCELERATOR (device tests)
 - `"cuda"` → `self.device_type`
 - `.cuda()` → `.to(self.device_type)` (or use `device=self.device_type` in creation)
 - Removed `@unittest.skipIf(not TEST_CUDA, ...)` — the framework handles device availability
@@ -188,8 +188,8 @@ class TestConvGeneric(TestCase):
         self.assertEqual(conv(x).shape, (1, 6, 8))
 
 
-class TestConvDeviceGeneric(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+class TestConvAccelerator(DeviceTypeTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
 
     def test_conv2d_forward(self):
         conv = torch.nn.Conv2d(3, 6, 3).to(self.device_type)
@@ -208,14 +208,14 @@ class TestConvCUDA(TestCase):
             conv(x)
 
 
-instantiate_device_type_tests(TestConvDeviceGeneric, globals())
+instantiate_device_type_tests(TestConvAccelerator, globals())
 ```
 
 **What changed:**
 - One class became three, each with single responsibility
-- `@onlyCUDA` removed from the device-generic test (framework handles it)
+- `@onlyCUDA` removed from the ACCELERATOR test (framework handles it)
 - `@onlyCUDA` removed from CUDA-specific test (class-level `hw_classification` handles it)
-- Device references converted in the DEVICE_GENERIC class
+- Device references converted in the ACCELERATOR class
 
 ---
 
@@ -256,8 +256,8 @@ class TestLinalgGeneric(TestCase):
         ...
 
 
-class TestLinalgDeviceGeneric(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+class TestLinalgAccelerator(DeviceTypeTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
 
     def setUp(self):
         super().setUp()
@@ -275,7 +275,7 @@ class TestLinalgDeviceGeneric(DeviceTypeTestBase):
         ...
 
 
-instantiate_device_type_tests(TestLinalgDeviceGeneric, globals())
+instantiate_device_type_tests(TestLinalgAccelerator, globals())
 ```
 
 **What changed:**
@@ -304,8 +304,8 @@ instantiate_parametrized_tests(TestOps)
 ### After
 
 ```python
-class TestOpsDeviceGeneric(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+class TestOpsAccelerator(DeviceTypeTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
 
     @dtypes(torch.float32, torch.float64)
     def test_unary_op(self, dtype):
@@ -313,7 +313,7 @@ class TestOpsDeviceGeneric(DeviceTypeTestBase):
         y = torch.sin(x)
         self.assertEqual(y.dtype, dtype)
 
-instantiate_device_type_tests(TestOpsDeviceGeneric, globals())
+instantiate_device_type_tests(TestOpsAccelerator, globals())
 ```
 
 **What changed:**
@@ -343,7 +343,7 @@ class TestAccelerator(TestCase):
 
 ```python
 class TestAccelerator(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+    hw_classification = HardwareClassification.ACCELERATOR
 
     def test_current_accelerator(self):
         accelerator = torch.accelerator.current_accelerator()
@@ -380,16 +380,16 @@ class TestEmbeddingGeneric(TestCase):
     hw_classification = HardwareClassification.GENERIC
     # 18 CPU-only tests
 
-class TestEmbeddingDeviceGeneric(DeviceTypeTestBase):
-    hw_classification = HardwareClassification.DEVICE_GENERIC
+class TestEmbeddingAccelerator(DeviceTypeTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
     # 29 device-agnostic tests
 
-instantiate_device_type_tests(TestEmbeddingDeviceGeneric, globals())
+instantiate_device_type_tests(TestEmbeddingAccelerator, globals())
 ```
 
 **What changed:**
 - `TestEmbeddingNN` → `TestEmbeddingGeneric` (clarifies classification)
-- `TestEmbeddingNNDeviceType` → `TestEmbeddingDeviceGeneric` (clarifies classification)
+- `TestEmbeddingNNDeviceType` → `TestEmbeddingAccelerator` (clarifies classification)
 - Added `hw_classification` to both
 - Ensured `instantiate_device_type_tests` is called
 
@@ -406,6 +406,6 @@ instantiate_device_type_tests(TestEmbeddingDeviceGeneric, globals())
 | `x.cpu()` then `x.cuda()` | `x.to("cpu")` then `x.to(self.device_type)` |
 | `torch.cuda.is_available()` | Remove check (framework handles availability) |
 | `@unittest.skipIf(not TEST_CUDA, ...)` | Remove (framework handles) |
-| `@onlyCUDA` | Remove if DEVICE_GENERIC; keep if DEVICE_SPECIFIC |
-| `torch.cuda.device_count()` | Keep if in DEVICE_SPECIFIC or MULTI_DEVICE class |
-| `torch.cuda.memory_allocated()` | Keep — this is CUDA-specific, belongs in DEVICE_SPECIFIC |
+| `@onlyCUDA` | Remove if ACCELERATOR; keep if in CUDA-specific class |
+| `torch.cuda.device_count()` | Keep if in CUDA-specific class |
+| `torch.cuda.memory_allocated()` | Keep — this is CUDA-specific, belongs in CUDA class |
