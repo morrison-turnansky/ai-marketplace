@@ -61,3 +61,6 @@ tests/old_standalone/
 examples/
 analyze_*.py
 temp.py
+
+# PyTorch
+pytorch/

@@ -1,6 +1,6 @@
 ---
 name: test-refactor
-description: Refactor a PyTorch test file to be device-agnostic. Walks through analyzing test classes, classifying them (GENERIC/DEVICE_GENERIC/DEVICE_SPECIFIC/MULTI_DEVICE_GENERIC/MULTI_DEVICE_SPECIFIC), splitting mixed classes, adding hw_classification attributes, converting hardcoded device references, and verifying the refactoring. Use when refactoring any test file in the PyTorch repo for the device-agnostic testing initiative.
+description: Refactor a PyTorch test file to be device-agnostic. Walks through analyzing test classes, classifying them (GENERIC/ACCELERATOR/CPU/CUDA/XPU/MPS), splitting mixed classes, adding hw_classification attributes, converting hardcoded device references, and verifying the refactoring. Use when refactoring any test file in the PyTorch repo for the device-agnostic testing initiative.
 ---
 
 # PyTorch Test Refactor
@@ -27,7 +27,7 @@ See [CLASSIFICATION-GUIDE.md](CLASSIFICATION-GUIDE.md) for the full decision tre
 These three rules from the project lead govern all refactoring decisions:
 
 1. **Class-level grouping**: All test cases must be grouped at the class level, inheriting from `unittest.TestCase` (or a subclass like `TestCase` from `torch.testing._internal.common_utils`).
-2. **Single responsibility**: Each test class must contain only ONE category of tests. No mixing GENERIC with DEVICE_GENERIC, no mixing DEVICE_SPECIFIC with DEVICE_GENERIC, etc.
+2. **Single responsibility**: Each test class must contain only ONE category of tests. No mixing GENERIC with ACCELERATOR, no mixing device-specific with ACCELERATOR, etc.
 3. **hw_classification attribute**: Every test class must have a `hw_classification` class attribute set to the appropriate `HardwareClassification` enum value.
 
 ## Workflow
@@ -53,16 +53,16 @@ Look for these signals in every test method and class-level code:
 | Signal | What it means |
 |--------|--------------|
 | `@onlyCUDA`, `@onlyXPU`, `@onlyMPS` | Device-specific test |
-| `@onlyNativeDeviceTypes` | Device-generic (CUDA + CPU) |
+| `@onlyNativeDeviceTypes` | ACCELERATOR (CUDA + CPU) |
 | `torch.cuda.*`, `torch.xpu.*`, `torch.mps.*` | Hardcoded device reference |
 | `"cuda"`, `"xpu"`, `"mps"` as string literals | Hardcoded device reference |
-| `self.device_type` or `device` parameter | Already device-generic |
+| `self.device_type` or `device` parameter | Already ACCELERATOR |
 | `instantiate_device_type_tests()` | Already using device-type infrastructure |
 | `instantiate_parametrized_tests()` | Parametrized but not device-typed |
-| `DeviceTypeTestBase` as parent | Already device-generic base |
-| `torch.distributed.*`, `dist.init_process_group` | Multi-device test |
-| `nccl`, `gloo`, `ProcessGroup` | Multi-device / distributed test |
-| `@require_distributed` | Multi-device test |
+| `DeviceTypeTestBase` as parent | Already ACCELERATOR base |
+| `torch.distributed.*`, `dist.init_process_group` | ACCELERATOR (distributed) |
+| `nccl`, `gloo`, `ProcessGroup` | ACCELERATOR (distributed) |
+| `@require_distributed` | ACCELERATOR (distributed) |
 | No device references at all | Likely GENERIC (CPU-only logic) |
 
 **Step 3 — Identify mixed classes:**
@@ -77,22 +77,22 @@ If it is, the file may be partially refactored. Note which classes already use i
 
 Apply the classification decision tree to each test class. See [CLASSIFICATION-GUIDE.md](CLASSIFICATION-GUIDE.md) for the full decision tree.
 
-**The five categories:**
+**The three categories:**
 
 | Classification | Description | Infrastructure |
 |---------------|-------------|---------------|
-| `GENERIC` | CPU-only, tests shared logic (dispatcher, autograd mechanics, serialization, fakePG distributed). No device dependency. | `TestCase` + `instantiate_parametrized_tests()` or plain class |
-| `DEVICE_GENERIC` | Tests on-device behavior that should work on ANY accelerator (aten op numerics, backend integration). CPU is included. | `DeviceTypeTestBase` + `instantiate_device_type_tests()` |
-| `DEVICE_SPECIFIC` | Tests locked to one specific accelerator (CUDA memory management, XPU-specific kernels, MPS graph API). | `TestCase` with device guard, use `HardwareClassification.CUDA` / `.XPU` / `.MPS` |
-| `MULTI_DEVICE_GENERIC` | Tests multi-device behavior (distributed collectives, multi-GPU communication). Should work across accelerator types. | `TestCase` with multi-device setup |
-| `MULTI_DEVICE_SPECIFIC` | Tests requiring multiple devices of a specific type (NCCL-specific, multi-GPU CUDA). | `TestCase` with specific multi-device guard |
+| `GENERIC` | Device-agnostic tests: dispatcher, autograd, serialization, JIT/FX, FakePG distributed (mocked PG on CPU). No `torch.cuda/xpu/mps` calls or device-specific decorators. Runs once on CPU, saving accelerator CI capacity since behavior is identical everywhere. | `TestCase` + `instantiate_parametrized_tests()` or plain class |
+| `ACCELERATOR` | Tests expected to pass on every accelerator: op numerics, tensor creation/ops, conv/embedding correctness, distributed collectives and multi-device communication that should work across accelerator types. Uses `self.device_type`, instantiated via `instantiate_device_type_tests`. Litmus test: would swapping CUDA → XPU/MPS/PrivateUse1 still make sense and pass? | `DeviceTypeTestBase` + `instantiate_device_type_tests()` |
+| `CPU` / `CUDA` / `XPU` / `MPS` | Locked to one device because the functionality has no equivalent elsewhere: CUDA memory/graphs, cuDNN/cuBLAS, TunableOp, XPU/MPS-specific kernels. Replaces old `@onlyCPU`/`@onlyCUDA`-style decorators. Use sparingly — only when the test genuinely can't be generalized to ACCELERATOR. | `TestCase` with device guard, use `HardwareClassification.CUDA` / `.XPU` / `.MPS` / `.CPU` |
+
+> **GENERIC vs CPU-specific**: GENERIC tests framework logic that never touches hardware; CPU is just where it happens to run. CPU tests functionality that only exists on the CPU backend (AVX/vectorization, MKL-DNN, thread-pool internals). That's why CPU is rare in practice — most CPU-only tests are GENERIC.
 
 **For each class, produce a classification verdict:**
 ```
-ClassName: DEVICE_GENERIC
+ClassName: ACCELERATOR
   Reason: 15/18 methods test tensor operations with device parameter, 
           3 methods use @onlyCUDA (should be split out)
-  Action: Split into TestFooDeviceGeneric + TestFooCUDA
+  Action: Split into TestFooAccelerator (ACCELERATOR) + TestFooCUDA (CUDA)
 ```
 
 **When uncertain about domain-specific tests:** If the test file is in a specialized module (e.g., `test/inductor/`, `test/distributed/`, `test/functorch/`), and you're unsure whether a test is truly device-generic or domain-specific, delegate to the appropriate specialist agent if one is available. The specialist can clarify whether the tested behavior is inherently tied to a specific backend.
@@ -130,16 +130,19 @@ When a class has methods from multiple categories:
 
 1. Create new classes with clear names following the pattern: `Test<Feature><Category>`
    - `TestConvGeneric` (GENERIC)
-   - `TestConvDeviceGeneric` (DEVICE_GENERIC — replaces the old `TestConvDeviceType` naming)
-   - `TestConvCUDA` (DEVICE_SPECIFIC)
+   - `TestConvAccelerator` (ACCELERATOR)
+   - `TestConvCUDA` (CUDA)
+   - `TestConvXPU` (XPU)
+   - `TestConvMPS` (MPS)
+   - `TestConvCPU` (CPU)
 
 2. Move methods to the appropriate class. Move shared helpers (setUp, utility methods) to whichever class uses them. If shared across classes, duplicate or extract to a mixin/base.
 
 3. Add `hw_classification` to each new class.
 
-**Step 4 — Convert DEVICE_GENERIC classes:**
+**Step 4 — Convert ACCELERATOR classes:**
 
-For classes classified as DEVICE_GENERIC:
+For classes classified as ACCELERATOR:
 
 1. Change parent to inherit from `DeviceTypeTestBase` (if not already).
 2. Ensure every test method accepts `self` only — the device is `self.device_type`.
@@ -148,10 +151,10 @@ For classes classified as DEVICE_GENERIC:
    - `torch.cuda.is_available()` → check removed (device availability is handled by the framework)
    - `torch.device("cuda")` → `torch.device(self.device_type)`
    - `x.cuda()` → `x.to(self.device_type)`
-   - `@onlyCUDA` → remove (or move method to DEVICE_SPECIFIC class)
+   - `@onlyCUDA` → remove (or move method to device-specific class)
 4. Add `instantiate_device_type_tests()` call at module level:
    ```python
-   instantiate_device_type_tests(TestConvDeviceGeneric, globals())
+   instantiate_device_type_tests(TestConvAccelerator, globals())
    ```
 5. Guard setUp/tearDown if they reference specific devices:
    ```python
@@ -163,25 +166,19 @@ For classes classified as DEVICE_GENERIC:
            torch.backends.cuda.matmul.allow_tf32 = False
    ```
 
-**Step 5 — Handle MULTI_DEVICE tests (distributed):**
+**Step 5 — Handle distributed tests:**
 
 For distributed test files:
 
-1. Check if `HardwareClassification.MULTI_DEVICE_GENERIC` and `MULTI_DEVICE_SPECIFIC` exist in the enum. If not, add them:
-   ```python
-   # In torch/testing/_internal/common_utils.py, HardwareClassification enum:
-   MULTI_DEVICE_GENERIC = "multi_device_generic"
-   MULTI_DEVICE_SPECIFIC = "multi_device_specific"
-   ```
-2. Classify distributed tests appropriately:
-   - Generic distributed tests (collectives that work across backends) → `MULTI_DEVICE_GENERIC`
-   - NCCL-specific, CUDA-specific multi-GPU tests → `MULTI_DEVICE_SPECIFIC`
+1. Classify distributed tests appropriately:
+   - Generic distributed tests (collectives that work across backends) → `ACCELERATOR`
+   - NCCL-specific, CUDA-specific multi-GPU tests → `CUDA`
 
 **Step 6 — Preserve test decorators:**
 
 Keep existing decorators that are still relevant:
 - `@skipIfNoLapack`, `@skipIfRocm`, `@skipCUDAIfNoCudnn` — keep as-is
-- `@onlyCUDA` — remove if method moved to DEVICE_GENERIC; keep if in DEVICE_SPECIFIC class
+- `@onlyCUDA` — remove if method moved to ACCELERATOR; keep if in CUDA-specific class
 - `@dtypes(...)`, `@ops(...)` — keep as-is
 - `@parametrize(...)` — keep as-is
 - `@skipIfTorchDynamo(...)` — keep as-is
@@ -197,10 +194,7 @@ python -c "import ast; ast.parse(open('test/<file>.py').read()); print('OK')"
 **Step 2 — Run the tests:**
 
 ```bash
-# Run with CUDA (if available)
-TEST_CONFIG=cuda python test/<file>.py -v
-
-# Run with CPU only
+# Runs on all available devices (CPU + any available accelerator)
 python test/<file>.py -v
 ```
 
@@ -229,15 +223,46 @@ for node in ast.walk(tree):
 "
 ```
 
-**Step 5 — Verify with hw-classification filter:**
+**Step 5 — Verify `instantiate_device_type_tests` for ACCELERATOR classes:**
+
+Every class with `hw_classification = HardwareClassification.ACCELERATOR` must have a corresponding `instantiate_device_type_tests()` call at module level:
 
 ```bash
-# Test that classification filtering works
-python test/<file>.py --hw-classification GENERIC -v
-python test/<file>.py --hw-classification DEVICE_GENERIC -v
+# Check that all ACCELERATOR classes have instantiate_device_type_tests
+python -c "
+import ast
+tree = ast.parse(open('test/<file>.py').read())
+accel_classes = set()
+instantiated = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.ClassDef):
+        for n in node.body:
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name) and t.id == 'hw_classification':
+                        if 'ACCELERATOR' in ast.dump(n.value):
+                            accel_classes.add(node.name)
+    if isinstance(node, ast.Call) and hasattr(node.func, 'id') and node.func.id == 'instantiate_device_type_tests':
+        if node.args:
+            instantiated.add(node.args[0].id if isinstance(node.args[0], ast.Name) else '')
+for cls in sorted(accel_classes):
+    prefix = '✓' if cls in instantiated else '✗'
+    print(f'{prefix} {cls}')
+"
 ```
 
-**Step 6 — PR checklist:**
+**Step 6 — Verify with hw-classification filter:**
+
+Run one command per classification present in the refactored file:
+
+```bash
+# Only include the classifications that were actually added to classes in this file.
+# For example, if the file only has GENERIC and ACCELERATOR classes:
+python test/<file>.py -v --hw-classification GENERIC
+python test/<file>.py -v --hw-classification ACCELERATOR
+```
+
+**Step 7 — PR checklist:**
 
 Before submitting the PR:
 - [ ] All test classes have `hw_classification` attribute
@@ -248,7 +273,7 @@ Before submitting the PR:
 - [ ] PR title follows format: `[TEST] Refactor <filename> with hw_classification`
 - [ ] PR body includes test plan with command and output
 
-**Step 7 — Generate PR description:**
+**Step 8 — Generate PR description:**
 
 Produce a ready-to-use PR description following this template:
 
@@ -259,11 +284,16 @@ Apply hardware classification structure following [#186918](https://github.com/p
 Changes:
 - <list each class rename/split/classification change, e.g.:>
 - Rename TestFoo → TestFooGeneric (hw_classification = GENERIC) — N CPU-only tests
-- Split TestBar into TestBarDeviceGeneric (DEVICE_GENERIC, M tests) + TestBarCUDA (CUDA, K tests)
-- Add hw_classification = DEVICE_GENERIC to TestBaz (no structural changes)
+- Split TestBar into TestBarAccelerator (ACCELERATOR, M tests) + TestBarCUDA (CUDA, K tests)
+- Add hw_classification = ACCELERATOR to TestBaz (no structural changes)
 
 ## Test Plan
-**<TEST_CONFIG=cuda python test/<file>.py>**
+<only include the classifications that were actually added to classes in this file>
+
+python test/<file>.py -v --hw-classification GENERIC
+Ran X tests in Y.YYYs — OK (skipped=Z)
+
+python test/<file>.py -v --hw-classification ACCELERATOR
 Ran X tests in Y.YYYs — OK (skipped=Z)
 
 ## Dependencies
@@ -280,4 +310,4 @@ Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassifi
 4. **Helper method ownership** — Helper methods (non-test methods) must move with the tests that call them. Check call sites before moving.
 5. **Module-level code** — `instantiate_device_type_tests()` and `instantiate_parametrized_tests()` calls must be at module level, after the class definition.
 6. **Import ordering** — Follow the existing file's import style. Don't reorganize unrelated imports.
-7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for DEVICE_GENERIC classes.
+7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for ACCELERATOR classes.
