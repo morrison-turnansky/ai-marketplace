@@ -34,6 +34,23 @@ Multi-agent system for PyTorch compiler development with 10 skills and 4 special
 
 👉 **[Full documentation](torch-compile/TORCH_COMPILE_TOOLS.md)**
 
+### Distributed Training Hang Diagnosis
+
+Debugging tools for PyTorch distributed training hangs with 1 skill and 1 specialized agent.
+
+**Features:**
+- Classification of 7 hang types (barrier deadlock, p2p hang, init timeout, collective mismatch, NCCL timeout, unused parameter, forward order violation)
+- Source-level ProcessGroupNCCL architecture reference (communicator lifecycle, watchdog, work queue)
+- NCCL flight recorder interpretation and cross-rank comparison
+- Anti-rationalization guardrails that prevent the agent from taking diagnostic shortcuts
+- Per-pattern verification evidence checklists to confirm fixes
+
+**Usage:**
+```
+/distributed-hang-diagnosis     # Load hang pattern reference
+Use the hang-debugger agent     # Invoke the diagnostic agent
+```
+
 ### PyTorch Test Refactoring Tools
 
 Skill and agent for refactoring PyTorch test files to be device-agnostic, following the community test refactoring initiative ([pytorch/pytorch#185590](https://github.com/pytorch/pytorch/issues/185590)).
@@ -56,6 +73,7 @@ claude plugin install deterministic-hook
 claude plugin install torch-compile
 claude plugin install torchtalk
 claude plugin install pytorch-test-refactor
+claude plugin install torch-distributed
 ```
 
 ## Using Marketplace Tools
@@ -64,9 +82,10 @@ claude plugin install pytorch-test-refactor
 
 Access skills directly:
 ```bash
-/compile-overview          # torch.compile pipeline reference
-/pytorch-dynamo           # Dynamo implementation guidance
-/skill-writer             # Create new skills
+/compile-overview              # torch.compile pipeline reference
+/pytorch-dynamo               # Dynamo implementation guidance
+/distributed-hang-diagnosis   # Distributed training hang patterns
+/skill-writer                 # Create new skills
 ```
 
 ### Natural Language
@@ -83,6 +102,7 @@ Delegate complex tasks to expert agents:
 - Use `dynamo-expert` for Dynamo-specific questions
 - Use `aot-expert` for AOT Autograd and gradient issues
 - Use `inductor-expert` for lowering and codegen
+- Use `hang-debugger` for distributed training hangs and NCCL deadlocks
 
 ## For Plugin Developers
 

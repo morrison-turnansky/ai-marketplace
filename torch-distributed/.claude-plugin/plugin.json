@@ -1,0 +1,23 @@
+{
+  "name": "torch-distributed",
+  "displayName": "PyTorch Distributed Training Tools",
+  "version": "0.1.0",
+  "description": "Debugging tools for PyTorch distributed training hangs. Currently focused on NCCL deadlock diagnosis with plans to expand to broader distributed debugging.",
+  "skills": "./skills/",
+  "agents": [
+    "./agents/hang-debugger.md"
+  ],
+  "author": {
+    "name": "TorchedHat"
+  },
+  "homepage": "https://github.com/TorchedHat/ai-marketplace",
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "pytorch",
+    "distributed",
+    "NCCL",
+    "deadlock",
+    "hang",
+    "debugging"
+  ]
+}
