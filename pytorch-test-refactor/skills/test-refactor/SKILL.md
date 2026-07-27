@@ -290,6 +290,9 @@ Changes:
 ## Test Plan
 <only include the classifications that were actually added to classes in this file>
 
+python test/<file>.py -v
+Ran X tests in Y.YYYs — OK (skipped=Z)
+
 python test/<file>.py -v --hw-classification GENERIC
 Ran X tests in Y.YYYs — OK (skipped=Z)
 
