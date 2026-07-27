@@ -32,12 +32,6 @@
       "source": "./vllm-compile"
     },
     {
-      "name": "vllm-test-audit",
-      "description": "Two-phase test oracle auditor for vLLM. Phase 1 (audit-pr) scopes to PR/directory, runs candidate finder, produces structured evidence. Phase 2 (test-audit-review) independently classifies via decision tree.",
-      "category": "testing",
-      "source": "./vllm-test-audit"
-    },
-    {
       "name": "ci-runner-demo",
       "description": "Demo plugin for validating Claude Code plugin infrastructure in CI. Tests hook execution, script invocation, and skill loading.",
       "category": "testing",
@@ -56,6 +50,36 @@
       "source": {
         "source": "url",
         "url": "https://github.com/TorchedHat/torchtalk.git",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "vllm-eval-harness",
+      "description": "Evaluation harness for vllm-test-audit with audit-contract skill, golden dataset, and F1/cost judges.",
+      "category": "testing",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/morrison-turnansky/vllm-eval-harness.git",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "vllm-test-audit",
+      "description": "Audit testing in vllm to enforce contracts of correctness.",
+      "category": "testing",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/morrison-turnansky/vllm-test-audit.git",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "vllm-nightly-audit",
+      "description": "Triage vLLM CI failures from PyTorch/Triton version bumps. Groups novel failures by root cause, classifies by repo, rates confidences.",
+      "category": "testing",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/morrison-turnansky/vllm-nightly-audit.git",
         "ref": "main"
       }
     }
