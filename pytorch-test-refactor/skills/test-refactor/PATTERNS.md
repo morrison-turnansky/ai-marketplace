@@ -395,6 +395,57 @@ instantiate_device_type_tests(TestEmbeddingAccelerator, globals())
 
 ---
 
+## Pattern 8: ACCELERATOR Class Already Using `instantiate_parametrized_tests`
+
+When a class is classified as ACCELERATOR but already uses `instantiate_parametrized_tests`, do NOT also add `instantiate_device_type_tests`. They are mutually exclusive — both parametrize test methods, and combining them causes `TypeError` from double-parametrization.
+
+### Before
+
+```python
+class RedistributeTest(DTensorContinuousTestBase):
+    @parametrize("dtype", [torch.float32, torch.complex64])
+    @with_comms
+    def test_partial_to_shard(self, dtype):
+        ...
+
+    @with_comms
+    def test_redistribute_negative_shard_dim(self):
+        ...
+
+instantiate_parametrized_tests(RedistributeTest)
+```
+
+### After
+
+```python
+class RedistributeTest(DTensorContinuousTestBase):
+    hw_classification = HardwareClassification.ACCELERATOR
+
+    @parametrize("dtype", [torch.float32, torch.complex64])
+    @with_comms
+    def test_partial_to_shard(self, dtype):
+        ...
+
+    @with_comms
+    def test_redistribute_negative_shard_dim(self):
+        ...
+
+instantiate_parametrized_tests(RedistributeTest)
+# NO instantiate_device_type_tests here — would conflict with instantiate_parametrized_tests
+```
+
+**What changed:** Only added `hw_classification`. The existing `instantiate_parametrized_tests` call is preserved as-is.
+
+**Why this matters:** Adding `instantiate_device_type_tests` to a class that already uses `instantiate_parametrized_tests` causes failures like:
+```
+TypeError: RedistributeTest.test_partial_to_shard() got an unexpected keyword argument 'dtype'
+```
+The `@parametrize` decorator and `instantiate_device_type_tests` both inject parameters into the test method signature, leading to double-parametrization conflicts.
+
+**How to verify:** After adding `hw_classification`, run the tests. If you see `TypeError` about unexpected keyword arguments, check whether both instantiation mechanisms are applied to the same class and remove the conflicting one.
+
+---
+
 ## Common Device Reference Conversions
 
 | Before | After |

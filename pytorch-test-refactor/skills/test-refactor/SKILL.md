@@ -144,7 +144,7 @@ When a class has methods from multiple categories:
 
 For classes classified as ACCELERATOR:
 
-1. Change parent to inherit from `DeviceTypeTestBase` (if not already).
+1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support.
 2. Ensure every test method accepts `self` only — the device is `self.device_type`.
 3. Replace hardcoded device strings:
    - `"cuda"` → `self.device_type`
@@ -251,16 +251,26 @@ for cls in sorted(accel_classes):
 "
 ```
 
-**Step 6 — Verify with hw-classification filter:**
+**Step 6 — Run tests and capture output for PR description:**
 
-Run one command per classification present in the refactored file:
+Run all three test commands, capture the summary line from each, and use them to populate the PR description. Only include classifications that are actually present in the file.
 
 ```bash
-# Only include the classifications that were actually added to classes in this file.
-# For example, if the file only has GENERIC and ACCELERATOR classes:
-python test/<file>.py -v --hw-classification GENERIC
-python test/<file>.py -v --hw-classification ACCELERATOR
+# 1. Run all tests
+python -m pytest test/<file>.py -v
+# Capture the summary line, e.g.: "95 passed, 3 skipped in 819.56s"
+
+# 2. Run one command per classification present in the file
+# Only include the ones actually used — check which hw_classification values
+# appear in the refactored file and run one command for each.
+python -m pytest test/<file>.py -v --hw-classification <CLASSIFICATION>
+# e.g.: GENERIC, ACCELERATOR, CPU, CUDA, XPU, MPS
 ```
+
+If any test fails, investigate and fix before proceeding. Common failure causes:
+- `instantiate_device_type_tests` conflicting with `instantiate_parametrized_tests` on the same class (see Common Pitfalls #8)
+- Missing helper methods after a class split
+- Device reference not fully converted
 
 **Step 7 — PR checklist:**
 
@@ -275,7 +285,7 @@ Before submitting the PR:
 
 **Step 8 — Generate PR description:**
 
-Produce a ready-to-use PR description following this template:
+Produce a ready-to-use PR description. Populate the Test Plan section with the actual summary lines captured in Step 6.
 
 ```markdown
 ## Summary
@@ -288,16 +298,16 @@ Changes:
 - Add hw_classification = ACCELERATOR to TestBaz (no structural changes)
 
 ## Test Plan
-<only include the classifications that were actually added to classes in this file>
+<populate with actual captured output from Step 6>
+<one entry per classification present in the file>
 
-python test/<file>.py -v
-Ran X tests in Y.YYYs — OK (skipped=Z)
+```bash
+python -m pytest test/<file>.py -v
+X passed, Y skipped in Z.ZZs
 
-python test/<file>.py -v --hw-classification GENERIC
-Ran X tests in Y.YYYs — OK (skipped=Z)
-
-python test/<file>.py -v --hw-classification ACCELERATOR
-Ran X tests in Y.YYYs — OK (skipped=Z)
+python -m pytest test/<file>.py -v --hw-classification <CLASSIFICATION>
+X passed, Y skipped in Z.ZZs
+```
 
 ## Dependencies
 <only if this PR depends on another unmerged PR, add: Depends on #<number>>
@@ -314,3 +324,4 @@ Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassifi
 5. **Module-level code** — `instantiate_device_type_tests()` and `instantiate_parametrized_tests()` calls must be at module level, after the class definition.
 6. **Import ordering** — Follow the existing file's import style. Don't reorganize unrelated imports.
 7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for ACCELERATOR classes.
+8. **`instantiate_device_type_tests` and `instantiate_parametrized_tests` are mutually exclusive** — Never apply both to the same class. Both mechanisms parametrize test methods; combining them causes `TypeError` from double-parametrization (e.g., `got an unexpected keyword argument 'dtype'`). If a class already uses `instantiate_parametrized_tests`, add `hw_classification` but do NOT add `instantiate_device_type_tests`. See [PATTERNS.md](PATTERNS.md) Pattern 8 for a concrete example.
