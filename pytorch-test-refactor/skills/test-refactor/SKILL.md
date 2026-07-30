@@ -61,9 +61,15 @@ Look for these signals in every test method and class-level code:
 | `instantiate_parametrized_tests()` | Parametrized but not device-typed |
 | `DeviceTypeTestBase` as parent | Already ACCELERATOR base |
 | `torch.distributed.*`, `dist.init_process_group` | ACCELERATOR (distributed) |
-| `nccl`, `gloo`, `ProcessGroup` | ACCELERATOR (distributed) |
+| `dist.get_default_backend_for_device` | ACCELERATOR (distributed) |
+| `@with_comms` (DTensor) | ACCELERATOR (distributed) |
+| `gloo` (CPU/CUDA only, no XPU/MPS) | ACCELERATOR (limited) |
+| `nccl` | CUDA |
+| `ProcessGroup` (backend-neutral use) | ACCELERATOR (distributed) |
 | `@require_distributed` | ACCELERATOR (distributed) |
 | No device references at all | Likely GENERIC (CPU-only logic) |
+
+> **Distributed backend rule:** Distributed tests are ACCELERATOR if the backend is selected dynamically via `dist.get_default_backend_for_device(device_type)` or `@with_comms`. They are CUDA if `"nccl"` is hard-coded.
 
 **Step 3 — Identify mixed classes:**
 
@@ -90,7 +96,7 @@ Apply the classification decision tree to each test class. See [CLASSIFICATION-G
 **For each class, produce a classification verdict:**
 ```
 ClassName: ACCELERATOR
-  Reason: 15/18 methods test tensor operations with device parameter, 
+  Reason: 15/18 methods test tensor operations with device parameter,
           3 methods use @onlyCUDA (should be split out)
   Action: Split into TestFooAccelerator (ACCELERATOR) + TestFooCUDA (CUDA)
 ```

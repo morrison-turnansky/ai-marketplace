@@ -112,7 +112,7 @@ class TestBinaryOpsGeneric(TestCase):
         self.assertEqual(z.shape, (3, 3))
 
 
-class TestBinaryOpsAccelerator(DeviceTypeTestBase):
+class TestBinaryOps(DeviceTypeTestBase):
     hw_classification = HardwareClassification.ACCELERATOR
 
     def test_add_on_device(self):
@@ -129,7 +129,7 @@ class TestBinaryOpsAccelerator(DeviceTypeTestBase):
         self.assertEqual(z.shape, (3, 3))
 
 
-instantiate_device_type_tests(TestBinaryOpsAccelerator, globals())
+instantiate_device_type_tests(TestBinaryOps, globals())
 
 if __name__ == "__main__":
     run_tests()
@@ -188,7 +188,7 @@ class TestConvGeneric(TestCase):
         self.assertEqual(conv(x).shape, (1, 6, 8))
 
 
-class TestConvAccelerator(DeviceTypeTestBase):
+class TestConv(DeviceTypeTestBase):
     hw_classification = HardwareClassification.ACCELERATOR
 
     def test_conv2d_forward(self):
@@ -208,7 +208,7 @@ class TestConvCUDA(TestCase):
             conv(x)
 
 
-instantiate_device_type_tests(TestConvAccelerator, globals())
+instantiate_device_type_tests(TestConv, globals())
 ```
 
 **What changed:**
@@ -256,7 +256,7 @@ class TestLinalgGeneric(TestCase):
         ...
 
 
-class TestLinalgAccelerator(DeviceTypeTestBase):
+class TestLinalg(DeviceTypeTestBase):
     hw_classification = HardwareClassification.ACCELERATOR
 
     def setUp(self):
@@ -275,7 +275,7 @@ class TestLinalgAccelerator(DeviceTypeTestBase):
         ...
 
 
-instantiate_device_type_tests(TestLinalgAccelerator, globals())
+instantiate_device_type_tests(TestLinalg, globals())
 ```
 
 **What changed:**
@@ -304,7 +304,7 @@ instantiate_parametrized_tests(TestOps)
 ### After
 
 ```python
-class TestOpsAccelerator(DeviceTypeTestBase):
+class TestOps(DeviceTypeTestBase):
     hw_classification = HardwareClassification.ACCELERATOR
 
     @dtypes(torch.float32, torch.float64)
@@ -313,7 +313,7 @@ class TestOpsAccelerator(DeviceTypeTestBase):
         y = torch.sin(x)
         self.assertEqual(y.dtype, dtype)
 
-instantiate_device_type_tests(TestOpsAccelerator, globals())
+instantiate_device_type_tests(TestOps, globals())
 ```
 
 **What changed:**
@@ -380,16 +380,16 @@ class TestEmbeddingGeneric(TestCase):
     hw_classification = HardwareClassification.GENERIC
     # 18 CPU-only tests
 
-class TestEmbeddingAccelerator(DeviceTypeTestBase):
+class TestEmbedding(DeviceTypeTestBase):
     hw_classification = HardwareClassification.ACCELERATOR
     # 29 device-agnostic tests
 
-instantiate_device_type_tests(TestEmbeddingAccelerator, globals())
+instantiate_device_type_tests(TestEmbedding, globals())
 ```
 
 **What changed:**
 - `TestEmbeddingNN` → `TestEmbeddingGeneric` (clarifies classification)
-- `TestEmbeddingNNDeviceType` → `TestEmbeddingAccelerator` (clarifies classification)
+- `TestEmbeddingNNDeviceType` → `TestEmbedding` (clarifies classification)
 - Added `hw_classification` to both
 - Ensured `instantiate_device_type_tests` is called
 
