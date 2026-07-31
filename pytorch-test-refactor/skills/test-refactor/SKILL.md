@@ -88,7 +88,7 @@ Apply the classification decision tree to each test class. See [CLASSIFICATION-G
 | Classification | Description | Infrastructure |
 |---------------|-------------|---------------|
 | `GENERIC` | Device-agnostic tests: dispatcher, autograd, serialization, JIT/FX, FakePG distributed (mocked PG on CPU). No `torch.cuda/xpu/mps` calls or device-specific decorators. Runs once on CPU, saving accelerator CI capacity since behavior is identical everywhere. | `TestCase` + `instantiate_parametrized_tests()` or plain class |
-| `ACCELERATOR` | Tests expected to pass on every accelerator: op numerics, tensor creation/ops, conv/embedding correctness, distributed collectives and multi-device communication that should work across accelerator types. Uses `self.device_type`, instantiated via `instantiate_device_type_tests`. Litmus test: would swapping CUDA → XPU/MPS/PrivateUse1 still make sense and pass? | `DeviceTypeTestBase` + `instantiate_device_type_tests()` |
+| `ACCELERATOR` | Tests expected to pass on every accelerator: op numerics, tensor creation/ops, distributed collectives, multi-device communication. Uses `self.device_type`. Litmus test: would swapping CUDA → XPU/MPS/PrivateUse1 still make sense and pass? | Keep existing parent if it provides `self.device_type`; add `instantiate_device_type_tests()` only when no other instantiation mechanism is in use (see Phase 3 Step 4). |
 | `CPU` / `CUDA` / `XPU` / `MPS` | Locked to one device because the functionality has no equivalent elsewhere: CUDA memory/graphs, cuDNN/cuBLAS, TunableOp, XPU/MPS-specific kernels. Replaces old `@onlyCPU`/`@onlyCUDA`-style decorators. Use sparingly — only when the test genuinely can't be generalized to ACCELERATOR. | `TestCase` with device guard, use `HardwareClassification.CUDA` / `.XPU` / `.MPS` / `.CPU` |
 
 > **GENERIC vs CPU-specific**: GENERIC tests framework logic that never touches hardware; CPU is just where it happens to run. CPU tests functionality that only exists on the CPU backend (AVX/vectorization, MKL-DNN, thread-pool internals). That's why CPU is rare in practice — most CPU-only tests are GENERIC.
@@ -150,7 +150,7 @@ When a class has methods from multiple categories:
 
 For classes classified as ACCELERATOR:
 
-1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support.
+1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support. `instantiate_device_type_tests()` can be used with any of these base classes, not just `DeviceTypeTestBase` — unless the class already uses `instantiate_parametrized_tests` (see Common Pitfall #8).
 2. Ensure every test method accepts `self` only — the device is `self.device_type`.
 3. Replace hardcoded device strings:
    - `"cuda"` → `self.device_type`
@@ -158,9 +158,13 @@ For classes classified as ACCELERATOR:
    - `torch.device("cuda")` → `torch.device(self.device_type)`
    - `x.cuda()` → `x.to(self.device_type)`
    - `@onlyCUDA` → remove (or move method to device-specific class)
-4. Add `instantiate_device_type_tests()` call at module level:
+4. Add `instantiate_device_type_tests()` call at module level, at the end of the file (after all class definitions and after any `create_local_tensor_test_class` / `instantiate_parametrized_tests` declarations), just before `if __name__ == "__main__":`. This is required because `instantiate_device_type_tests` removes the original class from globals, so all references to the class must come before it:
    ```python
+   # At end of file, after all classes and LocalTensor declarations:
    instantiate_device_type_tests(TestConvAccelerator, globals())
+
+   if __name__ == "__main__":
+       run_tests()
    ```
 5. Guard setUp/tearDown if they reference specific devices:
    ```python
@@ -179,6 +183,8 @@ For distributed test files:
 1. Classify distributed tests appropriately:
    - Generic distributed tests (collectives that work across backends) → `ACCELERATOR`
    - NCCL-specific, CUDA-specific multi-GPU tests → `CUDA`
+
+2. Add `instantiate_device_type_tests()` for ACCELERATOR-classified distributed classes — it works with `DTensorTestBase`, `DTensorContinuousTestBase`, `LocalDTensorTestBase`, and other multi-process bases. Do NOT skip it just because the class uses distributed infrastructure. Do NOT add `only_for=` unless explicitly required.
 
 **Step 6 — Preserve test decorators:**
 
@@ -331,3 +337,5 @@ Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassifi
 6. **Import ordering** — Follow the existing file's import style. Don't reorganize unrelated imports.
 7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for ACCELERATOR classes.
 8. **`instantiate_device_type_tests` and `instantiate_parametrized_tests` are mutually exclusive** — Never apply both to the same class. Both mechanisms parametrize test methods; combining them causes `TypeError` from double-parametrization (e.g., `got an unexpected keyword argument 'dtype'`). If a class already uses `instantiate_parametrized_tests`, add `hw_classification` but do NOT add `instantiate_device_type_tests`. See [PATTERNS.md](PATTERNS.md) Pattern 8 for a concrete example.
+9. **Don't skip `instantiate_device_type_tests` for distributed tests** — It works with any base class that provides `self.device_type`, including `DTensorContinuousTestBase`, `DTensorTestBase`, and `LocalDTensorTestBase`. Don't reason yourself out of adding it because the class uses multi-process infrastructure.
+10. **Don't add `only_for=` to `instantiate_device_type_tests`** — The call should be plain `instantiate_device_type_tests(ClassName, globals())` unless there is an explicit, documented reason to restrict device types. Do not copy patterns from neighboring files without checking this skill first.
