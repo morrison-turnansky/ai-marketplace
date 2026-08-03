@@ -10,12 +10,11 @@ Architectural deep-dive into PyTorch's Inductor compiler backend.
 2. [Directory Structure](#directory-structure)
 3. [Core Components](#core-components)
 4. [Intermediate Representation](#intermediate-representation)
-5. [Lowering System](#lowering-system)
-6. [Scheduling & Fusion](#scheduling--fusion)
-7. [Code Generation](#code-generation)
-8. [Data Flow](#data-flow)
-9. [Design Patterns](#design-patterns)
-10. [Key Files Reference](#key-files-reference)
+5. [IR Levels](#ir-levels)
+6. [Lowering System](#lowering-system)
+7. [Data Flow](#data-flow)
+8. [Key Files Reference](#key-files-reference)
+9. [Decomposition and Lowering Pipeline](#decomposition-and-lowering-pipeline)
 
 ---
 
@@ -127,6 +126,7 @@ def add_lowering(a, b):
 BaseSchedulerNode
 ├── SchedulerNode (single operation)
 ├── FusedSchedulerNode (fused operations)
+│   └── FusedNestedReductions (nested reduction pairs)
 ├── ExternKernelSchedulerNode (external call)
 ├── NopKernelSchedulerNode (eliminated)
 └── ForeachKernelSchedulerNode (multi-tensor)
@@ -135,35 +135,14 @@ BaseSchedulerNode
 **Algorithm**:
 1. Build dependency graph from IR
 2. Topologically sort operations
-3. Group fusible operations (score-based)
-4. Compute buffer lifetimes
-5. Apply memory planning
-6. Generate kernel code per node
-7. Generate wrapper orchestration
+3. Determine fusion legality (`can_fuse` — binary gate)
+4. Score and rank legal fusions (separate from legality)
+5. Compute buffer lifetimes
+6. Apply memory planning
+7. Generate kernel code per node
+8. Generate wrapper orchestration
 
-**Fusion Strategies**:
-
-**Pointwise**: Element-wise ops with same iteration space
-```python
-can_fuse = (both_pointwise and same_device and
-            same_numel and no_cycle)
-```
-
-**Reduction**: Same reduction pattern
-```python
-can_fuse = (same_numel and same_rnumel and
-            same_reduction_type)
-```
-
-**Horizontal**: Independent ops share kernel launch
-```python
-can_fuse = (same_kernel_type and independent and same_device)
-```
-
-**Scoring**:
-- +10 per shared input (saves memory reads)
-- Penalty for distance in execution order
-- Penalty for increased register pressure
+See [FUSION.md](FUSION.md) for the full `can_fuse` decision tree, `MemoryDep` data model, and nested reduction subsystem.
 
 ### 4. Memory Planning (memory.py)
 
@@ -268,6 +247,16 @@ Layout
    - Device capabilities
 3. Materialize to `FixedLayout`
 
+**MutationLayout**: When an in-place op (e.g., `x.copy_(y)`) is compiled,
+AOT Autograd functionalizes it into a pure computation plus mutation
+metadata (`InputAliasInfo` with `mutates_data=True`). Inductor assigns the
+output buffer a `MutationLayout` pointing to the input buffer instead of a
+`FixedLayout` that would allocate new memory. The buffer records
+`mutations = ['arg0_1']`, and the wrapper passes the caller's pointer as
+the output pointer — no allocation, no copy. `StarDep` (rather than
+`MemoryDep`) is used for mutation dependencies because the op owns the
+entire buffer, not a specific access pattern.
+
 ### ComputedBuffer (Define-by-Run IR)
 
 **Pointwise**:
@@ -294,6 +283,62 @@ Reduction.create(
 ```
 
 **Key**: `inner_fn` is executable Python function using `ops` handler (different implementations for analysis vs codegen)
+
+---
+
+## IR Levels
+
+Inductor has four distinct IR levels. Each represents the same computation
+at a different stage of compilation. Understanding which level you're
+looking at is critical for debugging and extending the compiler.
+
+```
+Node IR → [scheduler wraps] → Schedule IR → [trace inner_fn] → Loop-Level IR → [ops handler emits] → Codegen IR → [compile] → executable
+```
+
+### 1. Node IR (`ir.py`)
+
+**What to compute.** The output of lowering. `Pointwise`, `Reduction`,
+`Scan`, `TemplateBuffer`, `ExternKernelOut`. Each node has an `inner_fn`
+(executable Python lambda), `ranges` (iteration space), and optionally
+`reduction_ranges`. This is the define-by-run IR described above.
+
+### 2. Schedule IR (`scheduler.py`)
+
+**When and with whom.** The scheduler wraps each Node IR buffer in a
+`SchedulerNode`, extracts `read_writes` (the `MemoryDep` objects used for
+fusion analysis — see [FUSION.md](FUSION.md)), tracks dependencies via
+`ancestors` and `unmet_dependencies`, and assigns a `group` key
+`(device, (numel, rnumel))` for fusion matching. Fusion produces
+`FusedSchedulerNode` (multiple Node IR nodes in one kernel) or
+`FusedNestedReductions` (nested reduction pairs).
+
+### 3. Loop-Level IR (`loop_body.py`)
+
+**How to iterate.** Each `SchedulerNode`'s `inner_fn` is traced into a
+`LoopBody` — an FX graph of `ops.load`, `ops.store`, `ops.add`,
+`ops.index_expr`, etc. This is the **second FX graph** in the pipeline
+(the first was Dynamo's ATen-level graph). The `LoopBody` has `var_ranges`
+(iteration variables and their extents) and a `body()` method containing
+the ops sequence. This level separates index computation from value
+computation.
+
+### 4. Codegen IR (phase buffers → target source)
+
+**Target code.** The ops handler (e.g., `TritonKernelOverrides`) interprets
+Loop-Level IR's `ops.*` calls and writes string fragments into phase
+buffers (`loads`, `compute`, `stores`). `codegen_body()` assembles them
+into Triton/C++ source. See [CODEGEN.md](CODEGEN.md) for the full
+assembly mechanics.
+
+### Level Summary
+
+| Level | Lives in | Key types | Represents |
+|---|---|---|---|
+| Node IR | `ir.py` | `Pointwise`, `Reduction`, `TemplateBuffer` | What to compute |
+| Schedule IR | `scheduler.py` | `SchedulerNode`, `FusedSchedulerNode`, `MemoryDep` | When and with whom (fusion) |
+| Loop-Level IR | `loop_body.py` | `LoopBody`, `ops.load`, `ops.store` | How to iterate |
+| Codegen IR | `codegen/` | Phase buffers, `IndentedBuffer`, target strings | Target source code |
 
 ---
 
@@ -334,108 +379,13 @@ def gelu_decomposition(x, approximate="none"):
 
 ## Scheduling & Fusion
 
-### Fusion Legality
-
-**Requirements**:
-1. Same device
-2. Compatible iteration space
-3. No cyclic dependencies
-4. Memory traffic reduction
-
-**Scoring**:
-```python
-score = (num_shared_inputs * 10) - abs(node1.index - node2.index)
-if increases_register_pressure: score -= 50
-```
-
-### Fusion Patterns
-
-**1. Vertical (Producer-Consumer)**:
-```python
-producer = x.relu()
-consumer = producer.add(1)
-# Fused: lambda idx: add(relu(load(x, idx)), 1.0)
-```
-
-**2. Horizontal (Independent)**:
-```python
-y1 = x.relu(); y2 = x.sigmoid()
-# Fused: x_val = load(x, idx); store(y1, relu(x_val)); store(y2, sigmoid(x_val))
-```
-
-**3. Reduction**:
-```python
-sum1 = x.sum(dim=-1); max1 = x.max(dim=-1)
-# Fused: Single reduction loop with multiple accumulators
-```
-
-**4. Normalization (Reduction + Pointwise)**:
-```python
-mean = x.mean(keepdim=True); norm = x - mean
-# Two-pass: reduction then pointwise using result
-```
+See [FUSION.md](FUSION.md) for fusion legality, scoring, the `MemoryDep` data model, and the nested reduction subsystem.
 
 ---
 
 ## Code Generation
 
-### Codegen Architecture
-
-```
-CodeGen
-├── TritonScheduling → TritonKernel
-├── SIMDScheduling (CPU) → SIMDKernel
-├── CppScheduling → CppKernel
-└── Halide/Pallas (experimental)
-```
-
-### Triton Codegen
-
-**TritonKernel Components**:
-
-1. **Range Trees**: Nested loop structure (`IterationRanges`)
-2. **Indexing**: Symbolic to Triton code conversion
-3. **CSE**: Common subexpression elimination
-4. **Memory Coalescing**: Optimize access patterns
-
-**Generated Structure**:
-```python
-@triton.jit
-def kernel(in_ptr0, in_ptr1, out_ptr0, numel, BLOCK_SIZE: tl.constexpr):
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < numel
-    x = tl.load(in_ptr0 + offsets, mask=mask)
-    y = tl.load(in_ptr1 + offsets, mask=mask)
-    tl.store(out_ptr0 + offsets, x + y, mask=mask)
-```
-
-### C++ Codegen
-
-**SIMDKernel**: Generates vectorized C++ with AVX2/AVX512 intrinsics and OpenMP parallelization.
-
-```cpp
-#pragma omp parallel for
-for (int64_t i = 0; i < numel; i += 8) {
-    __m256 a = _mm256_loadu_ps(ptr_a + i);
-    __m256 b = _mm256_loadu_ps(ptr_b + i);
-    _mm256_storeu_ps(ptr_out + i, _mm256_add_ps(a, b));
-}
-```
-
-### Wrapper Codegen
-
-**PythonWrapperCodegen**: Orchestration code.
-
-```python
-def compiled_fn(arg0, arg1):
-    buf0 = torch.empty([s0, s1], device='cuda', dtype=torch.float32)
-    grid = lambda meta: (triton.cdiv(s0*s1, meta['BLOCK_SIZE']),)
-    triton_kernel[grid](arg0, arg1, buf0, numel=s0*s1, BLOCK_SIZE=1024)
-    return buf0
-```
-
-**Features**: Buffer allocation, argument preparation, grid sizing, CUDA graphs, synchronization
+See [CODEGEN.md](CODEGEN.md) for class hierarchies, ops handler pattern, range trees, CSE, phased assembly, and backend registration.
 
 ---
 
@@ -467,134 +417,24 @@ Output: Compiled Function (callable, JIT-compiled kernels)
 
 ---
 
-## Design Patterns
-
-### 1. Virtualized Variables
-
-**Thread-local dynamic scoping** for compilation context access.
-
-```python
-from torch._inductor.virtualized import V
-
-# Graph state
-V.graph.sizevars.size_hint(expr)
-V.graph.wrapper_code.writeline("...")
-
-# Current context
-with V.set_current_node(node):
-    # V.current_node accessible
-
-# Operation handler (define-by-run)
-ops.add(a, b)  # Different handler per context
-```
-
-**Key Variables**:
-- `V.graph`: `GraphLowering` instance
-- `V.fake_mode`: `FakeTensorMode` for shapes
-- `V.kernel`: Current kernel (in codegen)
-- `ops`: Operation handler (varies)
-
-**ops Handlers**:
-- `MockHandler`: Dependency analysis
-- `TritonOverrides`: Triton codegen
-- `CppOverrides`: C++ codegen
-- `FallbackHandler`: Eager PyTorch
-
-### 2. Size Variables
-
-**Symbolic shape handling with SymPy**.
-
-```python
-class SizeVarAllocator:
-    shape_env: ShapeEnv
-    var_to_val: dict[sympy.Symbol, int]
-
-    def size_hint(self, expr: sympy.Expr) -> int:
-        return int(expr.subs(self.var_to_val))
-
-    def statically_known_equals(self, a, b) -> bool:
-        return self.shape_env.evaluate_expr(sympy.Eq(a, b))
-```
-
-**Dynamic Shapes**:
-- Sizes: `s0, s1, s2, ...`
-- Strides: `s1*s2, s2, 1`
-- Guards: `s0 > 0`, `s0 == s1`
-- Specialization: Generate guards, compile
-
-### 3. Dependencies
-
-**Dependency tracking for scheduling**.
-
-```python
-@dataclass
-class MemoryDep:
-    name: str            # Buffer name
-    index: sympy.Expr    # Access pattern
-    size: tuple          # Shape
-    mode: str            # "read" or "write"
-
-@dataclass
-class StarDep:
-    name: str  # Entire buffer (unknown pattern)
-    mode: str
-
-class WeakDep(Dep):
-    pass  # Ordering only
-```
-
-**Scheduler Usage**:
-- Build dependency graph
-- Determine fusion legality
-- Compute buffer lifetimes
-
-### 4. IndentedBuffer
-
-**Code generation utility**.
-
-```python
-code = IndentedBuffer()
-code.writeline("def fn():")
-with code.indent():
-    code.writeline("x = 1")
-code.splice(multiline_string)  # Preserves indent
-```
-
-### 5. CSE (Common Subexpression Elimination)
-
-**Reuse computed values**.
-
-```python
-class CSE:
-    cache: dict[str, CSEVariable]
-
-    def generate(self, expr, dtype):
-        key = cache_key(expr, dtype)
-        if key in cache:
-            return cache[key]
-        var = newvar()
-        emit(f"{var} = {codegen(expr)}")
-        cache[key] = var
-        return var
-```
-
----
-
 ## Key Files Reference
 
 ### Compilation Pipeline
-- `compile_fx.py` (2997): Entry point
-- `graph.py` (2569): GraphLowering
-- `lowering.py` (7660): ATen→IR
-- `decomposition.py` (1259): Decompositions
-- `ir.py` (9705): IR definitions
+- `compile_fx.py`: Entry point
+- `graph.py`: GraphLowering orchestrator
+- `lowering.py`: ATen→IR lowering registry
+- `decomposition.py`: Op decompositions
+- `ir.py`: IR node definitions
+
+### Fusion Decisions
+- `scheduler.py`: Fusion legality, scoring, `NestedReduction`, `FusedNestedReductions`
+- `dependencies.py`: `MemoryDep`, `StarDep`, dependency analysis
+- `codegen/simd.py`: `SIMDScheduling.can_fuse()`, node schedule generation
 
 ### Scheduling & Optimization
-- `scheduler.py` (6588): Fusion/scheduling
-- `dependencies.py` (890): Dependency analysis
-- `memory.py` (1108): Memory planning
-- `pattern_matcher.py` (2368): Pattern matching
-- `select_algorithm.py` (4557): Algorithm selection
+- `memory.py`: Memory planning, buffer reuse
+- `pattern_matcher.py`: Pattern matching and replacement
+- `select_algorithm.py`: Algorithm selection and autotuning
 
 ### Code Generation
 - `codegen/triton.py`: Triton kernels
@@ -699,6 +539,3 @@ Decompositions transform the graph structure; lowerings generate loop-level IR.
 
 **For practical patterns and examples**: See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 
-**For debugging help**: See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-
-**For optimization tips**: See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)

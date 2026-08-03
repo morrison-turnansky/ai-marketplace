@@ -542,7 +542,6 @@ print(f"✓ Compiled GELU output shape: {output.shape}")
 **Related Guides**:
 - Inductor lowering patterns: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 - Architecture details: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Debugging: [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
 
 ---
 

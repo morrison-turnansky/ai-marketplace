@@ -584,5 +584,3 @@ prof.export_chrome_trace("trace.json")
 
 **For operator registration basics**: [COMPILE-OPERATOR-REGISTRATION.md](COMPILE-OPERATOR-REGISTRATION.md)
 **For architecture details**: [ARCHITECTURE.md](ARCHITECTURE.md)
-**For debugging**: [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-**For optimization**: [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)

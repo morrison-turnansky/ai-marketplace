@@ -11,11 +11,10 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 
 **Working with Inductor?** Start here:
 - Understanding architecture → See [ARCHITECTURE.md](ARCHITECTURE.md)
-- Debugging compilation issues → See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-- Optimizing performance → See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
+- Fusion decisions → See [FUSION.md](FUSION.md)
+- Codegen internals → See [CODEGEN.md](CODEGEN.md)
 - Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-- Triton template system → See [TRITON-CODEGEN.md](TRITON-CODEGEN.md)
-- Quick reference → See [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
+- Triton template system → See [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 
 ## What is Inductor?
 
@@ -87,7 +86,7 @@ torchinductor.ir.Pointwise(
 Override `ops` for analysis and backend codegen. This allows rapid lowering with minimal boilerplate.
 
 ### FX Graph Lowering
-Inductor receives FX graphs from Dynamo and lowers them to DBR IR nodes. Heavy use of decompositions reduces the number of ops that need explicit lowering.
+Inductor receives FX graphs from Dynamo and lowers them to **Node IR** — the define-by-run IR nodes (`Pointwise`, `Reduction`, etc.) with `inner_fn` and `ranges`. Heavy use of decompositions reduces the number of ops that need explicit lowering.
 
 **File**: `torch/_inductor/graph.py`, `torch/_inductor/lowering.py`
 
@@ -100,34 +99,27 @@ Uses **SymPy** extensively for reasoning about shapes, strides, and indexing:
 - Guards propagate globally
 
 ### Scheduling & Fusion
-Scheduler finds legal fusions and scores them to pick the best:
+The scheduler wraps Node IR in **Schedule IR** (`SchedulerNode`, `FusedSchedulerNode`) — adding dependency tracking, `MemoryDep` access patterns, and fusion group keys. Fusion is a two-phase process — **legality** then **scoring** — that are architecturally distinct:
 
-**Vertical fusion** (consumer-producer): Chain operations that feed into each other
-**Horizontal fusion** (consumer-consumer): Combine independent operations with same iteration space
+**Legality** (`can_fuse` in `SIMDScheduling`): A multi-branch decision tree. Not a simple "same numel" check — branches handle reduction pairs (including nested reduction dependent pairs), non-reduction pairs (with template exceptions), and reduction+pointwise epilogues.
 
-**Legal fusion requirements**:
-- Iteration ranges match
-- Fusion won't create dependency cycle
-- Dependencies are satisfied
+**Scoring**: Ranks legal candidates by memory traffic saved.
 
-**Scoring criteria**:
-- Fusions that save more memory reads (higher priority)
-- Fusions closer together in original order
+**Fusion patterns**: vertical (producer-consumer), horizontal (consumer-consumer), reduction+epilogue (two-pass kernel), nested reduction (`FusedNestedReductions`).
 
-**Fusion patterns**:
-- Multiple reductions + optional pointwise: `Pointwise(s0,s1) + Reduction(s0,s1) + Reduction(s0,s1)`
-- Normalization: `Reduction(s0,s1) + Pointwise(s0,s1)` (reduction followed by broadcast)
-- Reduction + pointwise on result: `Reduction(s0,s1) + Pointwise(s0)`
-
-**Files**: `torch/_inductor/scheduler.py`, `torch/_inductor/dependencies.py`
+**Files**: `scheduler.py`, `dependencies.py`, `codegen/simd.py`
+**Deep dive**: [FUSION.md](FUSION.md)
 
 ### Codegen
-IR nodes are converted to executable code via backends.
+Each `SchedulerNode`'s `inner_fn` is traced into **Loop-Level IR** (`LoopBody` — an FX graph of `ops.load`/`ops.store`/`ops.add` calls). Backend-specific ops handlers then translate Loop-Level IR into **Codegen IR** (target source strings).
 
 **Backends**:
 - **Triton** (`codegen/triton.py`) - GPU kernels, higher-level than CUDA
 - **C++** (`codegen/cpp.py`) - CPU kernels with vectorization and OpenMP
 - **CUDA** (`codegen/cuda/`) - Direct CUDA for specialized cases
+
+**IR progression**: Node IR → Schedule IR → Loop-Level IR → Codegen IR → executable
+**Deep dive**: [CODEGEN.md](CODEGEN.md), [ARCHITECTURE.md — IR Levels](ARCHITECTURE.md#ir-levels)
 
 ### Memory Planning
 Determines buffer lifetimes and enables buffer reuse to minimize memory footprint. Uses rematerialize-by-default strategy.
@@ -136,133 +128,25 @@ Determines buffer lifetimes and enables buffer reuse to minimize memory footprin
 
 ## Architecture Overview
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  AOT Autograd / PrimTorch                                      │
-│  - Captures forward + backwards                                │
-│  - Decompose into smaller operator set                         │
-│  - Backends can choose which decompositions to use             │
-└────────────────────────────────────────────────────────────────┘
-                            ↓
-┌────────────────────────────────────────────────────────────────┐
-│  Inductor Graph Lowerings (graph.py, lowering.py)              │
-│  - Performs implicit broadcasting                              │
-│  - Collapses dimensions                                        │
-│  - Simplifies indexing                                         │
-│  - Creates IR nodes (Buffer, Pointwise, Reduction, etc.)       │
-└────────────────────────────────────────────────────────────────┘
-                            ↓
-┌────────────────────────────────────────────────────────────────┐
-│  Inductor Scheduling (scheduler.py)                            │
-│  - Horizontal / vertical fusion decisions                      │
-│  - Reduction fusions                                           │
-│  - Rematerialize vs reuse decisions                            │
-│  - Tiling, layout tuning, loop order                           │
-│  - Memory planning and buffer reuse                            │
-│  - In-place memory buffers                                     │
-│  - Autotuning / kernel selection                               │
-└────────────────────────────────────────────────────────────────┘
-                            ↓
-┌────────────────────────────────────────────────────────────────┐
-│  Wrapper Codegen (codegen/wrapper.py)                          │
-│  - Outer code that calls kernels                               │
-│  - Allocates memory using torch APIs                           │
-│  - Replaces Python interpreter                                 │
-└────────────────────────────────────────────────────────────────┘
-                            ↓
-┌────────────────────────────────────────────────────────────────┐
-│  Backend Codegen                                               │
-│  ├─ Triton (codegen/triton.py) → GPU kernels                  │
-│  ├─ C++/OpenMP (codegen/cpp.py) → CPU kernels                 │
-│  └─ CUDA (codegen/cuda/) → Specialized CUDA kernels           │
-└────────────────────────────────────────────────────────────────┘
-                            ↓
-┌────────────────────────────────────────────────────────────────┐
-│              Compiled Module (ready to execute)                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-## Decomposition and Lowering Pipeline
-
-Decompositions run in AOT stage, then Inductor lowerings process the post-decomposition graph.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md#decomposition-and-lowering-pipeline) for complete details on pipeline order and preprocessing patterns.
-
-## Key Files Quick Map
-
-**Core**: `graph.py` (lowering), `scheduler.py` (fusion), `dependencies.py`, `memory_planning.py`, `ir.py`
-**Lowering**: `lowering.py`, `decomposition.py`, `virtualized.py`, `pattern_matcher.py`
-**Templates**: `kernel/mm.py` (matmul), `kernel/conv.py`, `select_algorithm.py`
-**Codegen**: `codegen/triton.py`, `codegen/cpp.py`, `codegen/wrapper.py`, `codegen/cuda/`
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full pipeline diagram, IR hierarchy, and decomposition/lowering pipeline.
 
 ## Common Tasks
 
-**Debug Compilation**: Enable `config.debug = True` and `config.trace.enabled = True`, check `/tmp/torchinductor_<user>/`. See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md).
+**Debug Compilation**: Enable `config.debug = True` and `config.trace.enabled = True`, check `/tmp/torchinductor_<user>/`. See the compile-trace skills.
 
 **Add Operator**: Add lowering in `lowering.py` or decomposition in `decomposition.py`. See [COMMON-PATTERNS.md](COMMON-PATTERNS.md).
 
-**Optimize Kernel**: Profile, check fusion opportunities, consider Triton templates. See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md).
+**Optimize Kernel**: Profile, check fusion opportunities, consider Triton templates..
 
 **Custom Fusion**: Use `pattern_matcher.py` and define replacement. See [COMMON-PATTERNS.md](COMMON-PATTERNS.md).
 
-## IR Node Types
-
-**Main types**: Buffer, Pointwise, Reduction, Scan, ComputedBuffer, TemplateBuffer (matmul/conv), ExternKernelOut, InputBuffer, View. See `torch/_inductor/ir.py`.
-
 ## Codegen Backends
 
-### Triton Backend
+- **Triton** (`codegen/triton.py`) — GPU kernels via Triton. Generates `tl.load`/`tl.store`/compute. Templates for GEMMs/conv/attention.
+- **C++** (`codegen/cpp.py`) — CPU kernels with AVX2/AVX512 vectorization and OpenMP.
+- **CUDA** (`codegen/cuda/`) — Direct CUDA for specialized cases (CUTLASS templates).
 
-Generates GPU kernels using Triton - a programming language for highly performant GPU kernels.
-
-**What is Triton**:
-- Higher level than CUDA, lower level than DSLs
-- Allows non-experts to write fast custom kernels
-- Users define tensors (blocks of data) in SRAM and modify them using torch-like operators
-- Developed by Philippe Tillet at OpenAI: https://triton-lang.org
-
-**Inductor's Triton Usage**:
-- Generates straightforward and understandable Triton functions
-- Triton compiler produces performant PTX code (then translated with ptxas)
-- Compilation done in parallel with fast C++ launchers
-- Compiled binaries cached on disk for fast warmup on reruns
-
-**Triton Features**:
-- Vectorized loads/stores
-- Tiling for differently strided inputs
-- Performant reductions using warp intrinsics or shared memory
-- Kernels are templated for autotuning or use heuristics for good parameters
-
-**Template Support**:
-- Operations like GEMMs, convolutions, multi-head attention use carefully tuned Triton templates
-- Templates participate in regular fusions
-- Inductor can't generate these from first principles
-
-**File**: `torch/_inductor/codegen/triton.py`
-
-### C++ Backend
-
-Generates CPU kernels and fallback implementations. Built in collaboration with Intel PyTorch team.
-
-**Features**:
-- Vectorization (AVX2, AVX512)
-- OpenMP parallelization
-- Specialized CPU optimizations
-- Promising early results (outperforming IPEX on Huggingface benchmarks)
-- Ensures TorchInductor is not overly specialized to GPUs
-
-**File**: `torch/_inductor/codegen/cpp.py`
-
-### CUDA Backend
-
-Direct CUDA code generation for specialized cases.
-
-**Use cases**:
-- Operations not suitable for Triton
-- Legacy templates
-- Vendor library integration
-
-**Directory**: `torch/_inductor/codegen/cuda/`
+See [CODEGEN.md](CODEGEN.md) for class hierarchies, ops handler pattern, and codegen mechanics.
 
 ## Configuration System
 
@@ -297,42 +181,11 @@ config.coordinate_descent_tuning = True  # Advanced tuning
 
 ## Performance Optimization
 
-### Fusion Opportunities
+See [FUSION.md](FUSION.md) for fusion patterns (vertical, horizontal, reduction+epilogue, nested reduction).
 
-**Pointwise fusion**: Chain element-wise operations
-```python
-# Before: 3 kernels
-x.relu().add(1).mul(2)
+**Auto-tuning**: `config.max_autotune = True` and `config.coordinate_descent_tuning = True` for aggressive kernel tuning.
 
-# After fusion: 1 kernel
-# fused_kernel(x): return (x.relu() + 1) * 2
-```
-
-**Reduction fusion**: Fuse reductions with pointwise ops
-```python
-# Before: 2 kernels
-x.sum(dim=-1).add(bias)
-
-# After fusion: 1 kernel
-# fused_kernel(x, bias): return x.sum(dim=-1) + bias
-```
-
-### Memory Layout
-
-Inductor optimizes memory layout for performance:
-- **Channels last** for CNNs
-- **Transposed layouts** when beneficial
-- **Padding** for alignment
-
-See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md) for details.
-
-### Auto-tuning
-
-Enable aggressive auto-tuning:
-```python
-config.max_autotune = True
-config.coordinate_descent_tuning = True
-```
+**Memory layout**: Inductor optimizes layout (channels-last, transposed, padding) automatically.
 
 ## Testing
 
@@ -370,45 +223,14 @@ class MyTest(TestCase):
         self.assertEqual(fn(x), compiled_fn(x))
 ```
 
-## Performance Opportunities
-
-Areas for continued optimization and development:
-
-**Codegen Support**:
-- Nested tensors / batched operations
-- Multi-tensor-apply optimizers (for training)
-
-**Memory Optimization**:
-- Advanced memory planning strategies
-- Better buffer reuse heuristics
-
-**Compilation Performance**:
-- Improving performance heuristics
-- Reducing autotuning overhead for small models
-- Faster cold-start compilation
-
-**Layout & Padding**:
-- Smart padding to improve performance
-- Better layout selection heuristics
-
-**Template Support**:
-- Expanding library of optimized templates
-- Better template fusion with generated kernels
-
-**Resources**:
-- Code: https://github.com/pytorch/pytorch/tree/master/torch/_inductor
-- Discussion: https://dev-discuss.pytorch.org/t/747
-- Results: https://github.com/pytorch/torchdynamo/issues/681
-
 ## Progressive Disclosure
 
 - **Getting started**: This file
 - **Architecture deep-dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Debugging guide**: [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-- **Optimization guide**: [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
+- **Fusion decisions**: [FUSION.md](FUSION.md)
+- **Codegen internals**: [CODEGEN.md](CODEGEN.md)
 - **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-- **Triton template system**: [TRITON-CODEGEN.md](TRITON-CODEGEN.md)
-- **Quick reference**: [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
+- **Triton template system**: [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 
 ## Development Principles
 
@@ -426,33 +248,19 @@ Areas for continued optimization and development:
 4. **Precision issues** - Mixed precision can cause numerical errors
 5. **Autotuning overhead** - Can be expensive for small models
 
-See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md#common-pitfalls) for details.
+Use the compile-trace skills for systematic debugging.
 
 ## Getting Help
 
-**Compilation error?** → [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-**Performance issue?** → [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
+**Compilation error?** → Use the compile-trace skills
+**Performance issue?** → Profile first, check fusion and autotuning config
 **Adding feature?** → [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-**Need quick command?** → [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
+**Need quick command?** → See config and testing sections above
 **Understanding internals?** → [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Related Components
 
-- **Dynamo** - Captures FX graphs fed to Inductor
-- **AOTAutograd** - Handles autograd graph transformations
-- **Triton** - GPU kernel language used by Inductor
-- **FX** - Graph representation format
-
-## Key Insights
-
-- Inductor's power comes from **aggressive fusion** and **code specialization**
-- The **scheduler** is the brain - it decides what to fuse and when
-- **Memory planning** enables buffer reuse, reducing allocations
-- **Triton** simplifies GPU codegen but C++ backend is still important
-- **Auto-tuning** finds optimal configurations but adds compile time
-
----
-
-**Line count**: <500 lines (following 500-line rule) ✅
-**Progressive disclosure**: Reference files for detailed topics ✅
-**YAML frontmatter**: Included ✅
+- **Dynamo** — Captures FX graphs fed to Inductor
+- **AOTAutograd** — Handles autograd graph transformations, functionalization
+- **Triton** — GPU kernel language used by Inductor
+- **FX** — Graph representation format
