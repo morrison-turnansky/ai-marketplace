@@ -1,8 +1,10 @@
 # Codegen Internals
 
-How Inductor generates kernel code. Covers the standard codegen pipeline
-for fused kernels (Pointwise, Reduction, etc.). For the template system
-(GEMM, conv, attention), see [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md).
+How Inductor transforms **Loop-Level IR** (the `LoopBody` FX graph of
+`ops.*` calls) into **Codegen IR** (Triton/C++ source). For the four IR
+levels and how they relate, see [ARCHITECTURE.md](ARCHITECTURE.md#ir-levels).
+For the template system (GEMM, conv, attention), see
+[TRITON-TEMPLATES.md](TRITON-TEMPLATES.md).
 
 ## Three Pillars
 
@@ -73,10 +75,12 @@ AMD ROCm, Apple MPS, and Google TPU all use this mechanism.
 
 ## The `ops` Handler Pattern
 
-Lowering code calls `ops.add(a, b)` without knowing the backend. The
-active handler (set via thread-local state in `virtualized.py`) determines
-what happens. This avoids the backend explosion that would result from
-parameterizing every lowering function.
+`ops.*` calls are **Loop-Level IR** operations. The active handler (set
+via thread-local state in `virtualized.py`) translates them into
+**Codegen IR** (target-specific strings written into phase buffers). This
+avoids the backend explosion that would result from parameterizing every
+lowering function — lowering code calls `ops.add(a, b)` without knowing
+the backend.
 
 ### OpOverrides Hierarchy
 
@@ -198,8 +202,9 @@ These go into `self.body` (pointwise dims) or `self.indexing_code`
 
 ## Phased Code Assembly
 
-Code is written into separate phase buffers during node codegen, then
-assembled into the right control flow structure. This separates *what to
+As the ops handler interprets Loop-Level IR (`LoopBody`'s `ops.*` calls),
+it writes Codegen IR fragments into separate phase buffers, then assembles
+them into the right control flow structure. This separates *what to
 compute* from *how to structure the control flow*.
 
 ### Buffer Layout per Kernel Layer

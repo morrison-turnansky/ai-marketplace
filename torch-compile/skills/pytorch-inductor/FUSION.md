@@ -47,9 +47,10 @@ actual logic has at least five branches:
 
 ## Key Data Structure: `MemoryDep`
 
-All fusion decisions ultimately examine `MemoryDep` objects from
-`dependencies.py`. Every scheduler node carries a `read_writes` attribute
-containing its memory dependencies:
+Fusion operates on **Schedule IR** (see [ARCHITECTURE.md](ARCHITECTURE.md#ir-levels)).
+`MemoryDep` objects are extracted from Node IR's `inner_fn` during scheduler
+initialization and attached to Schedule IR nodes. All fusion decisions
+examine these objects from `dependencies.py`:
 
 ```python
 class MemoryDep:

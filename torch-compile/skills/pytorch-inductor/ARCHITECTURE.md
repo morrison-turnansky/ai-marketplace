@@ -10,12 +10,11 @@ Architectural deep-dive into PyTorch's Inductor compiler backend.
 2. [Directory Structure](#directory-structure)
 3. [Core Components](#core-components)
 4. [Intermediate Representation](#intermediate-representation)
-5. [Lowering System](#lowering-system)
-6. [Scheduling & Fusion](#scheduling--fusion)
-7. [Code Generation](#code-generation)
-8. [Data Flow](#data-flow)
-9. [Design Patterns](#design-patterns)
-10. [Key Files Reference](#key-files-reference)
+5. [IR Levels](#ir-levels)
+6. [Lowering System](#lowering-system)
+7. [Data Flow](#data-flow)
+8. [Key Files Reference](#key-files-reference)
+9. [Decomposition and Lowering Pipeline](#decomposition-and-lowering-pipeline)
 
 ---
 
@@ -248,6 +247,16 @@ Layout
    - Device capabilities
 3. Materialize to `FixedLayout`
 
+**MutationLayout**: When an in-place op (e.g., `x.copy_(y)`) is compiled,
+AOT Autograd functionalizes it into a pure computation plus mutation
+metadata (`InputAliasInfo` with `mutates_data=True`). Inductor assigns the
+output buffer a `MutationLayout` pointing to the input buffer instead of a
+`FixedLayout` that would allocate new memory. The buffer records
+`mutations = ['arg0_1']`, and the wrapper passes the caller's pointer as
+the output pointer — no allocation, no copy. `StarDep` (rather than
+`MemoryDep`) is used for mutation dependencies because the op owns the
+entire buffer, not a specific access pattern.
+
 ### ComputedBuffer (Define-by-Run IR)
 
 **Pointwise**:
@@ -274,6 +283,62 @@ Reduction.create(
 ```
 
 **Key**: `inner_fn` is executable Python function using `ops` handler (different implementations for analysis vs codegen)
+
+---
+
+## IR Levels
+
+Inductor has four distinct IR levels. Each represents the same computation
+at a different stage of compilation. Understanding which level you're
+looking at is critical for debugging and extending the compiler.
+
+```
+Node IR → [scheduler wraps] → Schedule IR → [trace inner_fn] → Loop-Level IR → [ops handler emits] → Codegen IR → [compile] → executable
+```
+
+### 1. Node IR (`ir.py`)
+
+**What to compute.** The output of lowering. `Pointwise`, `Reduction`,
+`Scan`, `TemplateBuffer`, `ExternKernelOut`. Each node has an `inner_fn`
+(executable Python lambda), `ranges` (iteration space), and optionally
+`reduction_ranges`. This is the define-by-run IR described above.
+
+### 2. Schedule IR (`scheduler.py`)
+
+**When and with whom.** The scheduler wraps each Node IR buffer in a
+`SchedulerNode`, extracts `read_writes` (the `MemoryDep` objects used for
+fusion analysis — see [FUSION.md](FUSION.md)), tracks dependencies via
+`ancestors` and `unmet_dependencies`, and assigns a `group` key
+`(device, (numel, rnumel))` for fusion matching. Fusion produces
+`FusedSchedulerNode` (multiple Node IR nodes in one kernel) or
+`FusedNestedReductions` (nested reduction pairs).
+
+### 3. Loop-Level IR (`loop_body.py`)
+
+**How to iterate.** Each `SchedulerNode`'s `inner_fn` is traced into a
+`LoopBody` — an FX graph of `ops.load`, `ops.store`, `ops.add`,
+`ops.index_expr`, etc. This is the **second FX graph** in the pipeline
+(the first was Dynamo's ATen-level graph). The `LoopBody` has `var_ranges`
+(iteration variables and their extents) and a `body()` method containing
+the ops sequence. This level separates index computation from value
+computation.
+
+### 4. Codegen IR (phase buffers → target source)
+
+**Target code.** The ops handler (e.g., `TritonKernelOverrides`) interprets
+Loop-Level IR's `ops.*` calls and writes string fragments into phase
+buffers (`loads`, `compute`, `stores`). `codegen_body()` assembles them
+into Triton/C++ source. See [CODEGEN.md](CODEGEN.md) for the full
+assembly mechanics.
+
+### Level Summary
+
+| Level | Lives in | Key types | Represents |
+|---|---|---|---|
+| Node IR | `ir.py` | `Pointwise`, `Reduction`, `TemplateBuffer` | What to compute |
+| Schedule IR | `scheduler.py` | `SchedulerNode`, `FusedSchedulerNode`, `MemoryDep` | When and with whom (fusion) |
+| Loop-Level IR | `loop_body.py` | `LoopBody`, `ops.load`, `ops.store` | How to iterate |
+| Codegen IR | `codegen/` | Phase buffers, `IndentedBuffer`, target strings | Target source code |
 
 ---
 
@@ -314,97 +379,13 @@ def gelu_decomposition(x, approximate="none"):
 
 ## Scheduling & Fusion
 
-See [FUSION.md](FUSION.md) for a complete treatment of fusion legality,
-scoring, the `MemoryDep` data model, and the nested reduction subsystem.
-
-Key points:
-
-- **Legality** (`can_fuse`) and **scoring** are separate phases. Legality
-  is a multi-branch decision tree, not a simple shape check.
-- All fusion analysis examines `MemoryDep` objects — sympy expressions
-  encoding each node's access patterns and iteration domains.
-- **Nested reductions** (e.g., layernorm + block amax) are detected by
-  `NestedReduction` in `scheduler.py` and fused into `FusedNestedReductions`
-  nodes for specialized codegen.
+See [FUSION.md](FUSION.md) for fusion legality, scoring, the `MemoryDep` data model, and the nested reduction subsystem.
 
 ---
 
 ## Code Generation
 
-Codegen is organized into three independently extensible pillars. For
-detailed internals (range trees, CSE, phased assembly, ops handler pattern),
-see [CODEGEN.md](CODEGEN.md).
-
-### Kernel Hierarchy
-
-```
-Kernel                              -- phase buffers (loads/compute/stores), CSE, args
-  └─ SIMDKernel                     -- flattened indexing, range trees, tiling
-       ├─ TritonKernel              -- Triton GPU kernels
-       ├─ HalideKernel / MetalKernel / PallasKernel
-  └─ CppKernel                      -- Loop-nest based (not SIMD flattened)
-       ├─ CppVecKernel              -- AVX2/AVX512 vectorized
-       └─ CppKernelProxy            -- Dispatch to vec/tile/scalar
-```
-
-### Wrapper Hierarchy
-
-```
-PythonWrapperCodegen                -- Python wrapper (default)
-  ├─ SubgraphPythonWrapperCodegen   -- Nested subgraph wrappers
-  └─ CppWrapperCpu                  -- C++ wrapper for AOTInductor
-       └─ CppWrapperGpu             -- + GPU kernel launch
-```
-
-### Scheduling Hierarchy
-
-```
-BaseScheduling
-  └─ SIMDScheduling                 -- Fusion logic for SIMD backends
-       ├─ TritonScheduling          -- Triton-specific fusion rules
-       ├─ HalideScheduling / MetalScheduling / PallasScheduling
-  └─ CppScheduling                  -- C++ backend fusion
-```
-
-### Backend Registration
-
-The `DeviceCodegen` registry binds device → scheduling + wrapper.
-New backends register via `register_backend_for_device()`.
-
-### Generated Code Examples
-
-**Triton kernel**:
-```python
-@triton.jit
-def kernel(in_ptr0, in_ptr1, out_ptr0, numel, BLOCK_SIZE: tl.constexpr):
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < numel
-    x = tl.load(in_ptr0 + offsets, mask=mask)
-    y = tl.load(in_ptr1 + offsets, mask=mask)
-    tl.store(out_ptr0 + offsets, x + y, mask=mask)
-```
-
-**C++ kernel** (AVX2/AVX512 + OpenMP):
-```cpp
-#pragma omp parallel for
-for (int64_t i = 0; i < numel; i += 8) {
-    __m256 a = _mm256_loadu_ps(ptr_a + i);
-    __m256 b = _mm256_loadu_ps(ptr_b + i);
-    _mm256_storeu_ps(ptr_out + i, _mm256_add_ps(a, b));
-}
-```
-
-**Python wrapper** (orchestration):
-```python
-def compiled_fn(arg0, arg1):
-    buf0 = torch.empty([s0, s1], device='cuda', dtype=torch.float32)
-    grid = lambda meta: (triton.cdiv(s0*s1, meta['BLOCK_SIZE']),)
-    triton_kernel[grid](arg0, arg1, buf0, numel=s0*s1, BLOCK_SIZE=1024)
-    return buf0
-```
-
-**Features**: Buffer allocation, argument preparation, grid sizing, CUDA graphs, synchronization
+See [CODEGEN.md](CODEGEN.md) for class hierarchies, ops handler pattern, range trees, CSE, phased assembly, and backend registration.
 
 ---
 
