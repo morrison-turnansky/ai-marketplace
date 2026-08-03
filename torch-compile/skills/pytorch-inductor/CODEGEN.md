@@ -241,9 +241,30 @@ post_loop_combine | post_loop_store
 **Persistent reduction** (same as pointwise -- entire reduction dim fits
 in one block).
 
-After assembly, the per-phase buffers are cleared. `codegen_kernel()` then
-wraps `self.body` in the `@triton.jit` function with signature, grid
-heuristics, and metadata.
+After assembly, the per-phase buffers are cleared. This is a drain-and-clear
+pattern -- `codegen_body()` can be called multiple times per kernel. For
+reduction kernels it is called once to emit the reduction loop, then again
+after the epilogue section to emit the pointwise stores.
+
+### Two-Pass Schedule Codegen
+
+`codegen_node_schedule_with_kernel()` drives the node schedule through two
+passes with a critical step between them:
+
+1. **Pass 1** -- Collect indexing and decide inplace updates. Iterates the
+   schedule, calling `split_and_set_ranges()` and `indexing_from_args()`
+   for each node.
+2. **`finalize_indexing()`** -- Runs between passes. Finalizes index
+   calculations now that all nodes' access patterns are known.
+3. **Pass 2** -- Actual codegen. Applies dtype strength reduction and
+   index-to-value conversion, then calls `node.codegen()` which writes
+   into the phase buffers.
+
+Both passes respect `DisableReduction`/`EnableReduction` markers in the
+schedule (see [Node Schedule Structure](#node-schedule-structure)).
+
+`codegen_kernel()` then wraps `self.body` in the `@triton.jit` function
+with signature, grid heuristics, and metadata.
 
 ## CSE (Common Subexpression Elimination)
 
@@ -376,18 +397,81 @@ independently extensible via the DeviceCodegen registry.
 7. Source compiled by Triton -> PTX -> cubin, cached on disk
 ```
 
+## Node Schedule Structure
+
+The node schedule is not a flat list of operations — it is a structured
+sequence with control flow markers from `codegen/simd_kernel_features.py`:
+
+- **`DisableReduction`** / **`EnableReduction`** — bracket epilogue sections
+  where reduction results are consumed by pointwise ops. When `DisableReduction`
+  fires, `codegen_body()` flushes the reduction loop, then `inside_reduction`
+  is set to `False` so subsequent nodes generate pointwise code. `EnableReduction`
+  flushes the pointwise code and re-enters the reduction context.
+
+This marker system is how reduction + epilogue fusion works in practice:
+the scheduler decides the fusion is legal (see [FUSION.md](FUSION.md)),
+`generate_node_schedule()` arranges nodes with markers, and
+`codegen_node_schedule_with_kernel()` drives the two-pass codegen through
+the marked schedule.
+
+## Nested Reduction Codegen
+
+When `FusedNestedReductions` reaches codegen, specialized machinery in
+`codegen/simd.py` handles the multi-resolution tile layout:
+
+### `_GroupedReductionLayout`
+
+Maps a kernel's range trees onto a grouped reduction structure with three
+axes: passthrough (rows that don't participate in reduction), group
+(reduction groups), and local reduction (elements within a group). Handles
+the geometric layout of tiles and provides methods for broadcasting values
+between resolutions.
+
+### `_DerivedIterationFamily`
+
+Defines a derived iteration space for consumer stages that operate at a
+different resolution than the parent reduction. Contains:
+
+- `index_subs` — rewrite body iteration variables to derived tree symbols
+- `remap_index()` — transform a sympy index expression from the consumer's
+  natural space to the derived space
+
+When active on a kernel, the derived family's range trees replace the
+kernel's own for the duration of the consumer stage.
+
+### `_PointwiseRemapHandler`
+
+A `WrapperHandler` that intercepts `load` and `store` to transparently
+remap indices via a `_DerivedIterationFamily`. This is the mechanism for
+handler wrapping — a general pattern where an outer handler intercepts
+specific ops, transforms their arguments, and delegates to the inner handler:
+
+```python
+class _PointwiseRemapHandler(WrapperHandler):
+    def load(self, name, index):
+        remapped = self._family.remap_index(index)
+        return self._inner.load(name, remapped)
+```
+
+Handler wrapping is the codegen-side counterpart to the scheduler's fusion
+decision. The scheduler decides "these can share a kernel," and the wrapped
+handler makes that work by translating between iteration spaces at codegen
+time.
+
 ## Key Files
 
-- `codegen/common.py` -- Kernel base, CSE, IndentedBuffer, OpOverrides
-- `codegen/simd.py` -- SIMDKernel, SIMDScheduling, range trees
-- `codegen/triton.py` -- TritonKernel, TritonOverrides, TritonScheduling
-- `codegen/cpp.py` -- CppKernel, CppOverrides, CppScheduling
-- `codegen/wrapper.py` -- PythonWrapperCodegen, WrapperLine types
-- `codegen/cuda/` -- CUTLASS templates
-- `virtualized.py` -- `V` namespace, `ops` handler thread-local dispatch
+- `codegen/common.py` — Kernel base, CSE, IndentedBuffer, OpOverrides, WrapperHandler
+- `codegen/simd.py` — SIMDKernel, SIMDScheduling, range trees, `_GroupedReductionLayout`, `_DerivedIterationFamily`, `_PointwiseRemapHandler`
+- `codegen/simd_kernel_features.py` — Schedule markers (`DisableReduction`, `EnableReduction`)
+- `codegen/triton.py` — TritonKernel, TritonOverrides, TritonScheduling
+- `codegen/cpp.py` — CppKernel, CppOverrides, CppScheduling
+- `codegen/wrapper.py` — PythonWrapperCodegen, WrapperLine types
+- `codegen/cuda/` — CUTLASS templates
+- `virtualized.py` — `V` namespace, `ops` handler thread-local dispatch
 
 ---
 
+**For fusion decisions** (legality, scoring, `MemoryDep`): [FUSION.md](FUSION.md)
 **For template-based codegen** (GEMM, conv, attention): [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 **For architecture overview**: [ARCHITECTURE.md](ARCHITECTURE.md)
 **For practical patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)

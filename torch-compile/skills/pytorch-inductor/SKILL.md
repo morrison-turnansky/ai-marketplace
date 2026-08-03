@@ -11,12 +11,10 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 
 **Working with Inductor?** Start here:
 - Understanding architecture → See [ARCHITECTURE.md](ARCHITECTURE.md)
-- Debugging compilation issues → See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-- Optimizing performance → See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
-- Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
+- Fusion decisions → See [FUSION.md](FUSION.md)
 - Codegen internals → See [CODEGEN.md](CODEGEN.md)
+- Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 - Triton template system → See [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
-- Quick reference → See [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
 
 ## What is Inductor?
 
@@ -101,26 +99,18 @@ Uses **SymPy** extensively for reasoning about shapes, strides, and indexing:
 - Guards propagate globally
 
 ### Scheduling & Fusion
-Scheduler finds legal fusions and scores them to pick the best:
+Fusion is a two-phase process — **legality** then **scoring** — that are architecturally distinct:
 
-**Vertical fusion** (consumer-producer): Chain operations that feed into each other
-**Horizontal fusion** (consumer-consumer): Combine independent operations with same iteration space
+**Legality** (`can_fuse` in `SIMDScheduling`): A multi-branch decision tree checking whether two nodes can legally share a kernel. Branches handle: reduction+reduction (including nested reduction dependent pairs), non-reduction pairs (numel/rnumel match with template exceptions), reduction+pointwise epilogues (args swapped and re-checked), and more. Not a simple "same numel" check.
 
-**Legal fusion requirements**:
-- Iteration ranges match
-- Fusion won't create dependency cycle
-- Dependencies are satisfied
+**Scoring**: Ranks legal candidates by memory traffic saved (shared inputs eliminated, graph distance).
 
-**Scoring criteria**:
-- Fusions that save more memory reads (higher priority)
-- Fusions closer together in original order
+**Fusion patterns**: vertical (producer-consumer), horizontal (consumer-consumer), reduction+epilogue (two-pass kernel), nested reduction (two dependent reductions at different granularity via `FusedNestedReductions`).
 
-**Fusion patterns**:
-- Multiple reductions + optional pointwise: `Pointwise(s0,s1) + Reduction(s0,s1) + Reduction(s0,s1)`
-- Normalization: `Reduction(s0,s1) + Pointwise(s0,s1)` (reduction followed by broadcast)
-- Reduction + pointwise on result: `Reduction(s0,s1) + Pointwise(s0)`
+All fusion analysis examines `MemoryDep` objects — sympy expressions encoding each node's access patterns and iteration domains.
 
-**Files**: `torch/_inductor/scheduler.py`, `torch/_inductor/dependencies.py`
+**Files**: `scheduler.py`, `dependencies.py`, `codegen/simd.py`
+**Deep dive**: [FUSION.md](FUSION.md)
 
 ### Codegen
 IR nodes are converted to executable code via backends.
@@ -191,18 +181,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#decomposition-and-lowering-pipeline) for c
 
 ## Key Files Quick Map
 
-**Core**: `graph.py` (lowering), `scheduler.py` (fusion), `dependencies.py`, `memory_planning.py`, `ir.py`
+**Core**: `graph.py` (lowering), `scheduler.py` (fusion), `dependencies.py` (`MemoryDep`), `memory_planning.py`, `ir.py`
+**Fusion**: `scheduler.py` (`NestedReduction`, `FusedNestedReductions`), `codegen/simd.py` (`can_fuse`)
 **Lowering**: `lowering.py`, `decomposition.py`, `virtualized.py`, `pattern_matcher.py`
 **Templates**: `kernel/mm.py` (matmul), `kernel/conv.py`, `select_algorithm.py`
-**Codegen**: `codegen/triton.py`, `codegen/cpp.py`, `codegen/wrapper.py`, `codegen/cuda/`
+**Codegen**: `codegen/simd.py` (base), `codegen/triton.py`, `codegen/cpp.py`, `codegen/wrapper.py`, `codegen/common.py` (CSE)
 
 ## Common Tasks
 
-**Debug Compilation**: Enable `config.debug = True` and `config.trace.enabled = True`, check `/tmp/torchinductor_<user>/`. See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md).
+**Debug Compilation**: Enable `config.debug = True` and `config.trace.enabled = True`, check `/tmp/torchinductor_<user>/`. See the compile-trace skills.
 
 **Add Operator**: Add lowering in `lowering.py` or decomposition in `decomposition.py`. See [COMMON-PATTERNS.md](COMMON-PATTERNS.md).
 
-**Optimize Kernel**: Profile, check fusion opportunities, consider Triton templates. See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md).
+**Optimize Kernel**: Profile, check fusion opportunities, consider Triton templates..
 
 **Custom Fusion**: Use `pattern_matcher.py` and define replacement. See [COMMON-PATTERNS.md](COMMON-PATTERNS.md).
 
@@ -325,7 +316,7 @@ Inductor optimizes memory layout for performance:
 - **Transposed layouts** when beneficial
 - **Padding** for alignment
 
-See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md) for details.
+See `config.max_autotune` and `config.coordinate_descent_tuning`.
 
 ### Auto-tuning
 
@@ -405,12 +396,10 @@ Areas for continued optimization and development:
 
 - **Getting started**: This file
 - **Architecture deep-dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Debugging guide**: [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-- **Optimization guide**: [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
-- **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
+- **Fusion decisions**: [FUSION.md](FUSION.md)
 - **Codegen internals**: [CODEGEN.md](CODEGEN.md)
+- **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 - **Triton template system**: [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
-- **Quick reference**: [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
 
 ## Development Principles
 
@@ -428,14 +417,14 @@ Areas for continued optimization and development:
 4. **Precision issues** - Mixed precision can cause numerical errors
 5. **Autotuning overhead** - Can be expensive for small models
 
-See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md#common-pitfalls) for details.
+Use the compile-trace skills for systematic debugging.
 
 ## Getting Help
 
-**Compilation error?** → [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
-**Performance issue?** → [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
+**Compilation error?** → Use the compile-trace skills
+**Performance issue?** → Profile first, check fusion and autotuning config
 **Adding feature?** → [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-**Need quick command?** → [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
+**Need quick command?** → See config and testing sections above
 **Understanding internals?** → [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Related Components
