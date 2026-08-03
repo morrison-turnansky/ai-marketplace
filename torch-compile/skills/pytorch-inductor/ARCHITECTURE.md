@@ -379,26 +379,49 @@ mean = x.mean(keepdim=True); norm = x - mean
 
 ## Code Generation
 
-### Codegen Architecture
+Codegen is organized into three independently extensible pillars. For
+detailed internals (range trees, CSE, phased assembly, ops handler pattern),
+see [CODEGEN.md](CODEGEN.md).
+
+### Kernel Hierarchy
 
 ```
-CodeGen
-├── TritonScheduling → TritonKernel
-├── SIMDScheduling (CPU) → SIMDKernel
-├── CppScheduling → CppKernel
-└── Halide/Pallas (experimental)
+Kernel                              -- phase buffers (loads/compute/stores), CSE, args
+  └─ SIMDKernel                     -- flattened indexing, range trees, tiling
+       ├─ TritonKernel              -- Triton GPU kernels
+       ├─ HalideKernel / MetalKernel / PallasKernel
+  └─ CppKernel                      -- Loop-nest based (not SIMD flattened)
+       ├─ CppVecKernel              -- AVX2/AVX512 vectorized
+       └─ CppKernelProxy            -- Dispatch to vec/tile/scalar
 ```
 
-### Triton Codegen
+### Wrapper Hierarchy
 
-**TritonKernel Components**:
+```
+PythonWrapperCodegen                -- Python wrapper (default)
+  ├─ SubgraphPythonWrapperCodegen   -- Nested subgraph wrappers
+  └─ CppWrapperCpu                  -- C++ wrapper for AOTInductor
+       └─ CppWrapperGpu             -- + GPU kernel launch
+```
 
-1. **Range Trees**: Nested loop structure (`IterationRanges`)
-2. **Indexing**: Symbolic to Triton code conversion
-3. **CSE**: Common subexpression elimination
-4. **Memory Coalescing**: Optimize access patterns
+### Scheduling Hierarchy
 
-**Generated Structure**:
+```
+BaseScheduling
+  └─ SIMDScheduling                 -- Fusion logic for SIMD backends
+       ├─ TritonScheduling          -- Triton-specific fusion rules
+       ├─ HalideScheduling / MetalScheduling / PallasScheduling
+  └─ CppScheduling                  -- C++ backend fusion
+```
+
+### Backend Registration
+
+The `DeviceCodegen` registry binds device → scheduling + wrapper.
+New backends register via `register_backend_for_device()`.
+
+### Generated Code Examples
+
+**Triton kernel**:
 ```python
 @triton.jit
 def kernel(in_ptr0, in_ptr1, out_ptr0, numel, BLOCK_SIZE: tl.constexpr):
@@ -410,10 +433,7 @@ def kernel(in_ptr0, in_ptr1, out_ptr0, numel, BLOCK_SIZE: tl.constexpr):
     tl.store(out_ptr0 + offsets, x + y, mask=mask)
 ```
 
-### C++ Codegen
-
-**SIMDKernel**: Generates vectorized C++ with AVX2/AVX512 intrinsics and OpenMP parallelization.
-
+**C++ kernel** (AVX2/AVX512 + OpenMP):
 ```cpp
 #pragma omp parallel for
 for (int64_t i = 0; i < numel; i += 8) {
@@ -423,10 +443,7 @@ for (int64_t i = 0; i < numel; i += 8) {
 }
 ```
 
-### Wrapper Codegen
-
-**PythonWrapperCodegen**: Orchestration code.
-
+**Python wrapper** (orchestration):
 ```python
 def compiled_fn(arg0, arg1):
     buf0 = torch.empty([s0, s1], device='cuda', dtype=torch.float32)

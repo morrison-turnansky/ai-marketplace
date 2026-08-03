@@ -14,7 +14,8 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 - Debugging compilation issues → See [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
 - Optimizing performance → See [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
 - Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-- Triton template system → See [TRITON-CODEGEN.md](TRITON-CODEGEN.md)
+- Codegen internals → See [CODEGEN.md](CODEGEN.md)
+- Triton template system → See [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 - Quick reference → See [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
 
 ## What is Inductor?
@@ -407,7 +408,8 @@ Areas for continued optimization and development:
 - **Debugging guide**: [DEBUGGING-GUIDE.md](DEBUGGING-GUIDE.md)
 - **Optimization guide**: [OPTIMIZATION-GUIDE.md](OPTIMIZATION-GUIDE.md)
 - **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-- **Triton template system**: [TRITON-CODEGEN.md](TRITON-CODEGEN.md)
+- **Codegen internals**: [CODEGEN.md](CODEGEN.md)
+- **Triton template system**: [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 - **Quick reference**: [QUICK-REFERENCE.md](QUICK-REFERENCE.md)
 
 ## Development Principles
