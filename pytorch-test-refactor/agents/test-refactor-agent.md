@@ -65,7 +65,7 @@ Return a structured summary after completing the refactoring:
   ],
   "classes_after": [
     {"name": "TestFooGeneric", "methods": 8, "classification": "GENERIC"},
-    {"name": "TestFooAccelerator", "methods": 5, "classification": "ACCELERATOR"},
+    {"name": "TestFoo", "methods": 5, "classification": "ACCELERATOR"},
     {"name": "TestFooCUDA", "methods": 2, "classification": "CUDA"}
   ],
   "total_methods_before": 15,

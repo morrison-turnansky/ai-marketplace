@@ -98,7 +98,7 @@ Apply the classification decision tree to each test class. See [CLASSIFICATION-G
 ClassName: ACCELERATOR
   Reason: 15/18 methods test tensor operations with device parameter,
           3 methods use @onlyCUDA (should be split out)
-  Action: Split into TestFooAccelerator (ACCELERATOR) + TestFooCUDA (CUDA)
+  Action: Split into TestFoo (ACCELERATOR) + TestFooCUDASpecific (CUDA)
 ```
 
 **When uncertain about domain-specific tests:** If the test file is in a specialized module (e.g., `test/inductor/`, `test/distributed/`, `test/functorch/`), and you're unsure whether a test is truly device-generic or domain-specific, delegate to the appropriate specialist agent if one is available. The specialist can clarify whether the tested behavior is inherently tied to a specific backend.
@@ -136,11 +136,11 @@ When a class has methods from multiple categories:
 
 1. Create new classes with clear names following the pattern: `Test<Feature><Category>`
    - `TestConvGeneric` (GENERIC)
-   - `TestConvAccelerator` (ACCELERATOR)
-   - `TestConvCUDA` (CUDA)
-   - `TestConvXPU` (XPU)
-   - `TestConvMPS` (MPS)
-   - `TestConvCPU` (CPU)
+   - `TestConv` (ACCELERATOR)
+   - `TestConvCUDASpecific` (CUDA)
+   - `TestConvXPUSpecific` (XPU)
+   - `TestConvMPSSpecific` (MPS)
+   - `TestConvCPUSpecific` (CPU)
 
 2. Move methods to the appropriate class. Move shared helpers (setUp, utility methods) to whichever class uses them. If shared across classes, duplicate or extract to a mixin/base.
 
@@ -150,7 +150,7 @@ When a class has methods from multiple categories:
 
 For classes classified as ACCELERATOR:
 
-1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support. `instantiate_device_type_tests()` can be used with any of these base classes, not just `DeviceTypeTestBase` — unless the class already uses `instantiate_parametrized_tests` (see Common Pitfall #8).
+1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support. `instantiate_device_type_tests()` can be used with any of these base classes, not just `DeviceTypeTestBase`.
 2. Ensure every test method accepts `self` only — the device is `self.device_type`.
 3. Replace hardcoded device strings:
    - `"cuda"` → `self.device_type`
@@ -158,7 +158,18 @@ For classes classified as ACCELERATOR:
    - `torch.device("cuda")` → `torch.device(self.device_type)`
    - `x.cuda()` → `x.to(self.device_type)`
    - `@onlyCUDA` → remove (or move method to device-specific class)
-4. Add `instantiate_device_type_tests()` call at module level, at the end of the file (after all class definitions and after any `create_local_tensor_test_class` / `instantiate_parametrized_tests` declarations), just before `if __name__ == "__main__":`. This is required because `instantiate_device_type_tests` removes the original class from globals, so all references to the class must come before it:
+   - `@parametrize("dtype", [...])` → `@dtypes(...)` (the device-type framework handles dtype expansion natively; see [PATTERNS.md](PATTERNS.md) Pattern 5)
+4. Choose the correct instantiation function and add it at module level. **`instantiate_parametrized_tests` and `instantiate_device_type_tests` must never both be called on the same class** — both expand `@parametrize` decorators; calling both causes double-parametrization and a `RuntimeError`. `instantiate_device_type_tests` handles `@parametrize` expansion natively, so no separate call to `instantiate_parametrized_tests` is needed.
+
+   | Classification | Instantiation function | Rationale |
+   |---|---|---|
+   | **GENERIC** (CPU-only, no device dependency) | `instantiate_parametrized_tests` | `instantiate_device_type_tests` would multiply CI cost by spawning per-device subclasses for tests that don't need them. |
+   | **ACCELERATOR** (tests on-device behavior, any device) | `instantiate_device_type_tests` | Replace `instantiate_parametrized_tests`, change parent base class if needed, replace hardcoded `"cuda"` with `self.device_type`, and replace `@parametrize("dtype", [...])` with `@dtypes(...)`. All other `@parametrize` decorators stay as-is — the framework composes them natively. See [PATTERNS.md](PATTERNS.md) Pattern 5. |
+   | **CUDA/XPU/MPS-specific** | `instantiate_parametrized_tests` | Keep with the appropriate device guard. Do not use `instantiate_device_type_tests` for device-locked classes (see [PRECEDENTS.md](PRECEDENTS.md)). |
+   | **Class with `@parametrize("device", [...])` over a custom device list** (e.g., includes `"meta"` or `"cuda:0"`) | `instantiate_parametrized_tests` | The device-type framework would silently overwrite the custom device values with the framework-selected device, changing test semantics. |
+   | **Class using `@ops`** | `instantiate_device_type_tests` | The `@ops` parametrizer raises an explicit error if `device_cls` is `None`, which is the case under `instantiate_parametrized_tests`. |
+
+   Place the call at module level, at the end of the file (after all class definitions and after any `create_local_tensor_test_class` declarations), just before `if __name__ == "__main__":`. This is required because `instantiate_device_type_tests` removes the original class from globals, so all references to the class must come before it:
    ```python
    # At end of file, after all classes and LocalTensor declarations:
    instantiate_device_type_tests(TestConvAccelerator, globals())
@@ -306,7 +317,7 @@ Apply hardware classification structure following [#186918](https://github.com/p
 Changes:
 - <list each class rename/split/classification change, e.g.:>
 - Rename TestFoo → TestFooGeneric (hw_classification = GENERIC) — N CPU-only tests
-- Split TestBar into TestBarAccelerator (ACCELERATOR, M tests) + TestBarCUDA (CUDA, K tests)
+- Split TestBar into TestBar (ACCELERATOR, M tests) + TestBarCUDASpecific (CUDA, K tests)
 - Add hw_classification = ACCELERATOR to TestBaz (no structural changes)
 
 ## Test Plan
@@ -336,6 +347,6 @@ Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassifi
 5. **Module-level code** — `instantiate_device_type_tests()` and `instantiate_parametrized_tests()` calls must be at module level, after the class definition.
 6. **Import ordering** — Follow the existing file's import style. Don't reorganize unrelated imports.
 7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for ACCELERATOR classes.
-8. **`instantiate_device_type_tests` and `instantiate_parametrized_tests` are mutually exclusive** — Never apply both to the same class. Both mechanisms parametrize test methods; combining them causes `TypeError` from double-parametrization (e.g., `got an unexpected keyword argument 'dtype'`). If a class already uses `instantiate_parametrized_tests`, add `hw_classification` but do NOT add `instantiate_device_type_tests`. See [PATTERNS.md](PATTERNS.md) Pattern 8 for a concrete example.
+8. **`instantiate_device_type_tests` and `instantiate_parametrized_tests` are mutually exclusive** — Never apply both to the same class. See Phase 3 Step 4 sub-point 4 for the full decision table on which to use per classification.
 9. **Don't skip `instantiate_device_type_tests` for distributed tests** — It works with any base class that provides `self.device_type`, including `DTensorContinuousTestBase`, `DTensorTestBase`, and `LocalDTensorTestBase`. Don't reason yourself out of adding it because the class uses multi-process infrastructure.
 10. **Don't add `only_for=` to `instantiate_device_type_tests`** — The call should be plain `instantiate_device_type_tests(ClassName, globals())` unless there is an explicit, documented reason to restrict device types. Do not copy patterns from neighboring files without checking this skill first.
