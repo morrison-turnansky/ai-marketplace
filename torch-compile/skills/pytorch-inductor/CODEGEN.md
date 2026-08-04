@@ -124,6 +124,14 @@ overrides classes. The overrides handle element-wise compute (`ops.add`,
 `ops.exp`, `ops.where`), while `TritonKernel.load()` and `.store()` handle
 memory access directly. Both write into the same set of IndentedBuffers.
 
+Both `load()` and `store()` call `TritonKernel.indexing()`, which selects
+between three pointer strategies: flat pointer arithmetic (`tl.load(ptr +
+offset)`, the default), block pointers (`tl.make_block_ptr`, opt-in via
+`config.triton.use_block_ptr`), or TMA descriptors (hardware-gated to
+Hopper+ GPUs via `config.triton.use_tensor_descriptor`). The selection is
+based on config flags, pattern matching on the SymPy index expression, and
+hardware capability checks.
+
 ## Range Trees
 
 ### The Problem They Solve
@@ -387,6 +395,9 @@ independently extensible via the DeviceCodegen registry.
 
 ## Full Pipeline (One Kernel)
 
+For how the scheduler dispatches fused nodes to reach this point, see
+[FUSION.md — Fusion to Codegen Dispatch](FUSION.md#fusion-to-codegen-dispatch).
+
 ```
 1. Scheduler decides which nodes to fuse, creates SIMDKernelFeatures
 2. TritonScheduling creates TritonKernel with tiling parameters
@@ -476,7 +487,8 @@ time.
 
 ---
 
-**For fusion decisions** (legality, scoring, `MemoryDep`): [FUSION.md](FUSION.md)
+**For fusion decisions and dispatch**: [FUSION.md](FUSION.md)
+**For memory planning** (buffer reuse, allocation pools): [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 **For template-based codegen** (GEMM, conv, attention): [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 **For architecture overview**: [ARCHITECTURE.md](ARCHITECTURE.md)
 **For practical patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
