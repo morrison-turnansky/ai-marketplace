@@ -11,8 +11,9 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 
 **Working with Inductor?** Start here:
 - Understanding architecture → See [ARCHITECTURE.md](ARCHITECTURE.md)
-- Fusion decisions → See [FUSION.md](FUSION.md)
+- Fusion decisions & dispatch → See [FUSION.md](FUSION.md)
 - Codegen internals → See [CODEGEN.md](CODEGEN.md)
+- Memory planning → See [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 - Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 - Triton template system → See [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 
@@ -122,9 +123,13 @@ Each `SchedulerNode`'s `inner_fn` is traced into **Loop-Level IR** (`LoopBody` �
 **Deep dive**: [CODEGEN.md](CODEGEN.md), [ARCHITECTURE.md — IR Levels](ARCHITECTURE.md#ir-levels)
 
 ### Memory Planning
-Determines buffer lifetimes and enables buffer reuse to minimize memory footprint. Uses rematerialize-by-default strategy.
+Determines buffer lifetimes and enables buffer reuse to minimize memory
+footprint. Two modes: pool-based packing for inference, simple reuse for
+training. Uses rematerialize-by-default strategy — trades compute for memory
+by inlining buffers that don't need to be stored.
 
-**File**: `torch/_inductor/memory_planning.py`
+**Files**: `codegen/memory_planning.py`, `codegen/wrapper.py`, `memory.py`
+**Deep dive**: [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 
 ## Architecture Overview
 
@@ -227,8 +232,9 @@ class MyTest(TestCase):
 
 - **Getting started**: This file
 - **Architecture deep-dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Fusion decisions**: [FUSION.md](FUSION.md)
+- **Fusion decisions & dispatch**: [FUSION.md](FUSION.md)
 - **Codegen internals**: [CODEGEN.md](CODEGEN.md)
+- **Memory planning**: [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 - **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
 - **Triton template system**: [TRITON-TEMPLATES.md](TRITON-TEMPLATES.md)
 

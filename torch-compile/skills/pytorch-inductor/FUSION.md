@@ -145,13 +145,113 @@ BaseSchedulerNode
 └── ForeachKernelSchedulerNode — multi-tensor operation
 ```
 
+## Fusion to Codegen Dispatch
+
+Once fusion decisions are made, the scheduler drives code generation. Fusion
+owns both the decision (above) AND the dispatch — routing each fused node
+group to the appropriate codegen handler.
+
+### The Dispatch Loop
+
+`Scheduler._codegen()` iterates the fused schedule in order and routes each
+node to its backend handler based on type:
+
+```
+for node in nodes:
+    enter_context(node)              # device guards, stream switching
+    buffer_names_to_free.update(node.last_usage)
+
+    if node.is_template():           → codegen_template()
+    elif node.is_extern():           → codegen_extern_call()
+    elif node.is_foreach():          → codegen_combo_kernel()
+    elif FusedNestedReductions:      → codegen_nested_reduction()
+    elif FusedMixOrderReductions:    → codegen_mix_order_reduction()
+    elif FusedSchedulerNode/
+         SchedulerNode:              → backend.codegen_node()   # main SIMD path
+    else:                            → node.mark_run()          # NopKernel
+```
+
+The type-based routing pattern is stable. Specific node types may be added or
+removed, but the architecture — iterate schedule order, dispatch by type to
+the registered backend handler — is fundamental.
+
+### Buffer Lifetime Handoff
+
+Before codegen begins, `compute_last_usage()` walks the schedule in reverse
+to determine when each buffer is last read. During the dispatch loop,
+`buffer_names_to_free` is updated per node, and `codegen_free()` emits
+`FreeIfNotReusedLine` into the wrapper. This is the scheduler's contract with
+memory planning — see [MEMORY-PLANNING.md](MEMORY-PLANNING.md).
+
+### Node Schedule Construction
+
+For SIMD nodes (the common path), `generate_node_schedule()` creates a
+structured schedule that interleaves `SchedulerNode` objects with control flow
+markers. This is where the fusion decisions from Part 1 become a concrete
+execution plan.
+
+Nodes are classified into two categories:
+
+- **Main body**: Fits inside the reduction loop
+  (`node_numel == numel and node_rnumel == rnumel`, or the node's entire
+  iteration space is `numel * rnumel` with `rnumel == 1`).
+
+- **Epilogue**: Pointwise operations that consume reduction output
+  (`node_numel == numel and node_rnumel == 1 and rnumel != 1`). These get
+  bracketed by `DisableReduction`/`EnableReduction` markers.
+
+The marker system is how reduction + epilogue fusion (decided by `can_fuse`
+above) becomes executable: the scheduler decides the fusion is legal, then
+`generate_node_schedule()` arranges the nodes so the reduction runs first,
+markers flush the loop, and the epilogue runs as pointwise code consuming
+the reduction result — all in one kernel.
+
+### The Bridge to Kernel Codegen
+
+The SIMD path flows through a chain of methods that progressively narrow
+from "fused node group" to "kernel object being populated":
+
+```
+codegen_node(node)
+  unwrap FusedSchedulerNode → list of SchedulerNodes
+  → _codegen_nodes(nodes)
+      determine (numel, rnumel) from the reduction node
+      generate_node_schedule() → structured schedule with markers
+      → codegen_node_schedule(features)
+          compute tiling
+          create kernel object (e.g. TritonKernel)
+          codegen_node_schedule_with_kernel() → traces nodes into kernel
+          kernel.codegen_kernel() → generates source string
+          define_kernel() → assigns name, writes to wrapper
+          mark_run() → allocates output buffers
+          call_kernel() → emits kernel launch into wrapper
+```
+
+`codegen_node_schedule_with_kernel()` drives the two-pass codegen mechanism
+described in [CODEGEN.md — Two-Pass Schedule Codegen](CODEGEN.md#two-pass-schedule-codegen).
+
+### mark_run and Output Allocation
+
+After kernel source is generated, `mark_run()` calls `buf.allocate()` for
+each output buffer. This emits `AllocateLine` into the wrapper — the starting
+point for memory planning (see
+[MEMORY-PLANNING.md](MEMORY-PLANNING.md)). Outputs are allocated after source
+generation but before the kernel call is emitted, ensuring buffers exist when
+the kernel runs.
+
 ## Key Files
 
-- `scheduler.py` — `can_fuse` scoring, `NestedReduction`, `FusedNestedReductions`
+- `scheduler.py` — `can_fuse` scoring, `NestedReduction`,
+  `FusedNestedReductions`, `_codegen()` dispatch loop, `compute_last_usage()`
 - `dependencies.py` — `MemoryDep`, `StarDep`, `WeakDep`, dependency analysis
-- `codegen/simd.py` — `SIMDScheduling.can_fuse()`, node schedule generation
+- `codegen/simd.py` — `SIMDScheduling.can_fuse()`, `codegen_node()`,
+  `generate_node_schedule()`, `codegen_node_schedule()`,
+  `codegen_node_schedule_with_kernel()`
 
 ---
 
-**For codegen internals**: [CODEGEN.md](CODEGEN.md)
+**For codegen internals** (kernel lifecycle, two-pass mechanism, CSE):
+[CODEGEN.md](CODEGEN.md)
+**For memory planning** (buffer reuse, allocation pools):
+[MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 **For architecture overview**: [ARCHITECTURE.md](ARCHITECTURE.md)

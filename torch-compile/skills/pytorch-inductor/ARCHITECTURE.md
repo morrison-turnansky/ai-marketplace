@@ -144,29 +144,25 @@ BaseSchedulerNode
 
 See [FUSION.md](FUSION.md) for the full `can_fuse` decision tree, `MemoryDep` data model, and nested reduction subsystem.
 
-### 4. Memory Planning (memory.py)
+### 4. Memory Planning
 
-**Buffer allocation and reuse strategy**.
+**Buffer allocation and reuse strategy**, running after fusion and scheduling.
 
-**MemoryPlanningState**:
-```python
-buffer_pool: dict[StorageKey, list[Buffer]]
+Two modes: **pool-based packing** (inference) sub-allocates multiple buffers
+from large pools using a temporal/spatial split tree, and **simple reuse**
+(training) matches freed buffers to new allocations by shape and dtype.
 
-def allocate(node):
-    if reusable := find_reusable(node):
-        assign_reused(node, reusable)
-    else:
-        allocate_new(node)
+Key design decisions:
+- Rematerialize by default — trade compute for memory
+- Buffer lifetimes determined by scheduler's `compute_last_usage()` reverse walk
+- Fusion eliminates intermediates before memory planning sees them
+- Node reordering tries multiple topological sorts to minimize peak memory
+- Deferred WrapperLine architecture lets allocations be rewritten after the
+  full schedule is known
 
-def free(node):
-    buffer_pool[key].append(node.buffer)
-```
+**Files**: `codegen/memory_planning.py`, `codegen/wrapper.py`, `memory.py`
 
-**Strategy**:
-- Pool buffers by size/dtype/device
-- Lifetime analysis determines freeing
-- Rematerialize by default (recompute vs store)
-- In-place mutations when safe
+See [MEMORY-PLANNING.md](MEMORY-PLANNING.md) for the full deep-dive.
 
 ---
 
