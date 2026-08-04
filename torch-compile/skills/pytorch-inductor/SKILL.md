@@ -120,7 +120,7 @@ Each `SchedulerNode`'s `inner_fn` is traced into **Loop-Level IR** (`LoopBody` �
 - **CUDA** (`codegen/cuda/`) - Direct CUDA for specialized cases
 
 **IR progression**: Node IR → Schedule IR → Loop-Level IR → Codegen IR → executable
-**Deep dive**: [CODEGEN.md](CODEGEN.md), [ARCHITECTURE.md — IR Levels](ARCHITECTURE.md#ir-levels)
+**Deep dive**: [CODEGEN.md](CODEGEN.md), [ARCHITECTURE.md — IR Levels](ARCHITECTURE.md)
 
 ### Memory Planning
 Determines buffer lifetimes and enables buffer reuse to minimize memory
