@@ -1,0 +1,19 @@
+{
+  "name": "pytorch-test-review",
+  "displayName": "PyTorch Test Refactor Review",
+  "version": "1.0.0",
+  "description": "Review PyTorch device-agnostic test refactoring PRs. Validates hw_classification, code patterns, decorator usage, CI lint compliance, PR structure, and profiler/dynamo-specific rules. Modeled after PyTorch's /pr-review skill.",
+  "skills": "./skills/",
+  "agents": ["./agents/test-refactor-reviewer.md"],
+  "author": { "name": "Riya Punia" },
+  "homepage": "https://github.com/TorchedHat/ai-marketplace",
+  "keywords": [
+    "pytorch",
+    "testing",
+    "review",
+    "hw-classification",
+    "device-agnostic",
+    "accelerator",
+    "lintrunner"
+  ]
+}

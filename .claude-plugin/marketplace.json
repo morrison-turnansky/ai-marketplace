@@ -50,6 +50,12 @@
       "source": "./pytorch-test-refactor"
     },
     {
+      "name": "pytorch-test-review",
+      "description": "Review PyTorch test refactoring PRs for hw_classification, code patterns, decorators, CI compliance, and PR structure. Acts as a PyTorch maintainer gate before upstream submission.",
+      "category": "testing",
+      "source": "./pytorch-test-review"
+    },
+    {
       "name": "torchtalk",
       "description": "MCP server for conversational PyTorch codebase analysis: trace Python->C++->CUDA binding chains, impact analysis, dispatch mapping, call-graph visualization, and test discovery across the PyTorch source.",
       "category": "development",
