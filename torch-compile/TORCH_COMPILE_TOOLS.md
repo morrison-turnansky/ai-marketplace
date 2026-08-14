@@ -109,15 +109,6 @@ What's the AOT partitioning algorithm?
    - Auto-detected from your Python environment if PyTorch is installed from source
    - Override with `PYTORCH_PATH` environment variable if needed
 
-## Automatic Setup
-
-The plugin automatically (via SessionStart hook):
-- ✅ Installs required dependencies (`acp-steering-mcp`)
-- ✅ Indexes PyTorch modules on first use
-- ✅ Configures steering MCP server
-- ✅ Loads all 10 skills and 4 agents
-
-
 ## Architecture
 
 See [REPO_ARCH.md](REPO_ARCH.md) for detailed architecture, including:

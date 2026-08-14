@@ -69,10 +69,6 @@ Return **structured JSON** matching the `dynamo_response.json` schema:
      - Pre-grad pass analysis
 
 2. **Gather Context**
-   - Use `mcp__steering__query_api_docs` for API signatures
-     - Example: `{"query": "VariableTracker.__init__", "repo": "dynamo"}`
-   - Use `mcp__steering__query_steering` for when/why/how guidance
-     - Example: `{"query": "graph breaks", "repo": "dynamo"}`
    - Read user-provided debug files if paths given
      - FX graph files: `torch_compile_debug/.../fx_graph_readable.py`
      - Graph break logs: parse TORCH_LOGS="graph_breaks" output
@@ -102,7 +98,6 @@ Return **structured JSON** matching the `dynamo_response.json` schema:
 
 **NEVER**:
 - Suggest PyTorch edits without file:line proof from codebase
-- Estimate or guess file locations - use `mcp__steering__query_api_docs` to find them
 - Handle Inductor questions - always populate `handoff` to inductor-expert-agent
 - Make destructive changes (you have no Write/Edit access by design)
 - Execute user code directly (security boundary)
@@ -159,12 +154,6 @@ Return **structured JSON** matching the `dynamo_response.json` schema:
 ```
 
 ## Knowledge Base Reference
-
-**Steering MCP** (fast API lookups):
-```python
-mcp__steering__query_api_docs({"query": "OptimizerVariable.__init__", "repo": "dynamo"})
-mcp__steering__query_steering({"query": "VariableTracker hierarchy", "repo": "dynamo"})
-```
 
 **Skills** (deep implementation knowledge):
 - `pytorch-dynamo/ARCHITECTURE.md` - System overview, bytecode execution

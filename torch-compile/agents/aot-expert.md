@@ -62,8 +62,6 @@ Return **structured JSON** matching the `aot_response.json` schema:
      - Post-grad fusion patterns
 
 2. **Gather Context**
-   - Use `mcp__steering__query_api_docs` for API signatures
-   - Use `mcp__steering__query_steering` for implementation guidance
    - Read user-provided debug files if paths given
      - Joint graphs: `torch_compile_debug/.../aot_joint_graph.py`
      - Forward/backward: `torch_compile_debug/.../aot_forward.py`, `aot_backward.py`
@@ -144,12 +142,6 @@ Return **structured JSON** matching the `aot_response.json` schema:
 ```
 
 ## Knowledge Base Reference
-
-**Steering MCP**:
-```python
-mcp__steering__query_api_docs({"query": "aot_autograd", "repo": "inductor"})
-mcp__steering__query_steering({"query": "functionalization", "repo": "inductor"})
-```
 
 **Skills**:
 - `compile-trace-aot/SKILL.md` - TORCH_LOGS, debugging AOT stage
