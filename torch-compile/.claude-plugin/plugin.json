@@ -23,12 +23,5 @@
     "aot",
     "compiler",
     "performance"
-  ],
-  "mcpServers": {
-    "steering": {
-      "command": "acp-steering-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
+  ]
 }

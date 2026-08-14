@@ -72,10 +72,6 @@ Return **structured JSON** matching the `inductor_response.json` schema:
      - Analyzing generated kernels (output_code.py)
 
 2. **Gather Context**
-   - Use `mcp__steering__query_api_docs` for API signatures
-     - Example: `{"query": "Pointwise.__init__", "repo": "inductor"}`
-   - Use `mcp__steering__query_steering` for implementation guidance
-     - Example: `{"query": "register_lowering patterns", "repo": "inductor"}`
    - Read user-provided debug files if paths given
      - IR files: `torch_compile_debug/.../ir_post_fusion.txt`
      - Kernel code: `torch_compile_debug/.../output_code.py`
@@ -263,13 +259,6 @@ Return **structured JSON** matching the `inductor_response.json` schema:
 ```
 
 ## Knowledge Base Reference
-
-**Steering MCP** (fast API lookups):
-```python
-mcp__steering__query_api_docs({"query": "Pointwise.__init__", "repo": "inductor"})
-mcp__steering__query_steering({"query": "register_lowering", "repo": "inductor"})
-mcp__steering__list_repos()
-```
 
 **Skills** (deep implementation knowledge):
 - `pytorch-inductor/ARCHITECTURE.md` - System overview, IR structure, codegen flow
