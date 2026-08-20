@@ -141,7 +141,7 @@ When a class has methods from multiple categories:
 
 For classes classified as DEVICE_GENERIC:
 
-1. Change parent to inherit from `DeviceTypeTestBase` (if not already).
+1. Keep the existing parent class if it already provides `self.device_type` (e.g., `DeviceTypeTestBase`, `DTensorTestBase`, `DTensorContinuousTestBase`, `DistributedTestBase`). Only change the parent to `DeviceTypeTestBase` if the class currently inherits from plain `TestCase` and needs device-type support. `instantiate_device_type_tests()` can be used with any of these base classes, not just `DeviceTypeTestBase`.
 2. Ensure every test method accepts `self` only — the device is `self.device_type`.
 3. Replace hardcoded device strings:
    - `"cuda"` → `self.device_type`
@@ -149,9 +149,24 @@ For classes classified as DEVICE_GENERIC:
    - `torch.device("cuda")` → `torch.device(self.device_type)`
    - `x.cuda()` → `x.to(self.device_type)`
    - `@onlyCUDA` → remove (or move method to DEVICE_SPECIFIC class)
-4. Add `instantiate_device_type_tests()` call at module level:
+   - `@parametrize("dtype", [...])` → `@dtypes(...)` (the device-type framework handles dtype expansion natively; see [PATTERNS.md](PATTERNS.md) Pattern 5)
+4. Choose the correct instantiation function and add it at module level. **`instantiate_parametrized_tests` and `instantiate_device_type_tests` must never both be called on the same class** — both expand `@parametrize` decorators; calling both causes double-parametrization and a `RuntimeError`. `instantiate_device_type_tests` handles `@parametrize` expansion natively, so no separate call to `instantiate_parametrized_tests` is needed.
+
+   | Classification | Instantiation function | Rationale |
+   |---|---|---|
+   | **GENERIC** (CPU-only, no device dependency) | `instantiate_parametrized_tests` | `instantiate_device_type_tests` would multiply CI cost by spawning per-device subclasses for tests that don't need them. |
+   | **DEVICE_GENERIC** (tests on-device behavior, any device) | `instantiate_device_type_tests` | Replace `instantiate_parametrized_tests`, change parent base class if needed, replace hardcoded `"cuda"` with `self.device_type`, and replace `@parametrize("dtype", [...])` with `@dtypes(...)`. All other `@parametrize` decorators stay as-is — the framework composes them natively. See [PATTERNS.md](PATTERNS.md) Pattern 5. |
+   | **CUDA/XPU/MPS-specific** | `instantiate_parametrized_tests` | Keep with the appropriate device guard. Do not use `instantiate_device_type_tests` for device-locked classes (see [PRECEDENTS.md](PRECEDENTS.md)). |
+   | **Class with `@parametrize("device", [...])` over a custom device list** (e.g., includes `"meta"` or `"cuda:0"`) | `instantiate_parametrized_tests` | The device-type framework would silently overwrite the custom device values with the framework-selected device, changing test semantics. |
+   | **Class using `@ops`** | `instantiate_device_type_tests` | The `@ops` parametrizer raises an explicit error if `device_cls` is `None`, which is the case under `instantiate_parametrized_tests`. |
+
+   Place the call at module level, at the end of the file (after all class definitions and after any `create_local_tensor_test_class` declarations), just before `if __name__ == "__main__":`. This is required because `instantiate_device_type_tests` removes the original class from globals, so all references to the class must come before it:
    ```python
+   # At end of file, after all classes and LocalTensor declarations:
    instantiate_device_type_tests(TestConvDeviceGeneric, globals())
+
+   if __name__ == "__main__":
+       run_tests()
    ```
 5. Guard setUp/tearDown if they reference specific devices:
    ```python
@@ -177,6 +192,8 @@ For distributed test files:
    - Generic distributed tests (collectives that work across backends) → `MULTI_DEVICE_GENERIC`
    - NCCL-specific, CUDA-specific multi-GPU tests → `MULTI_DEVICE_SPECIFIC`
 
+3. Add `instantiate_device_type_tests()` for DEVICE_GENERIC distributed classes — it works with `DTensorTestBase`, `DTensorContinuousTestBase`, `LocalDTensorTestBase`, and other multi-process bases. Do NOT skip it just because the class uses distributed infrastructure. Do NOT add `only_for=` unless explicitly required.
+
 **Step 6 — Preserve test decorators:**
 
 Keep existing decorators that are still relevant:
@@ -197,10 +214,7 @@ python -c "import ast; ast.parse(open('test/<file>.py').read()); print('OK')"
 **Step 2 — Run the tests:**
 
 ```bash
-# Run with CUDA (if available)
-TEST_CONFIG=cuda python test/<file>.py -v
-
-# Run with CPU only
+# Runs on all available devices (CPU + any available accelerator)
 python test/<file>.py -v
 ```
 
@@ -229,15 +243,56 @@ for node in ast.walk(tree):
 "
 ```
 
-**Step 5 — Verify with hw-classification filter:**
+**Step 5 — Verify `instantiate_device_type_tests` for DEVICE_GENERIC classes:**
+
+Every class with `hw_classification = HardwareClassification.DEVICE_GENERIC` must have a corresponding `instantiate_device_type_tests()` call at module level:
 
 ```bash
-# Test that classification filtering works
-python test/<file>.py --hw-classification GENERIC -v
-python test/<file>.py --hw-classification DEVICE_GENERIC -v
+# Check that all DEVICE_GENERIC classes have instantiate_device_type_tests
+python -c "
+import ast
+tree = ast.parse(open('test/<file>.py').read())
+accel_classes = set()
+instantiated = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.ClassDef):
+        for n in node.body:
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name) and t.id == 'hw_classification':
+                        if 'DEVICE_GENERIC' in ast.dump(n.value):
+                            accel_classes.add(node.name)
+    if isinstance(node, ast.Call) and hasattr(node.func, 'id') and node.func.id == 'instantiate_device_type_tests':
+        if node.args:
+            instantiated.add(node.args[0].id if isinstance(node.args[0], ast.Name) else '')
+for cls in sorted(accel_classes):
+    prefix = '✓' if cls in instantiated else '✗'
+    print(f'{prefix} {cls}')
+"
 ```
 
-**Step 6 — PR checklist:**
+**Step 6 — Run tests and capture output for PR description:**
+
+Run all three test commands, capture the summary line from each, and use them to populate the PR description. Only include classifications that are actually present in the file.
+
+```bash
+# 1. Run all tests
+python -m pytest test/<file>.py -v
+# Capture the summary line, e.g.: "95 passed, 3 skipped in 819.56s"
+
+# 2. Run one command per classification present in the file
+# Only include the ones actually used — check which hw_classification values
+# appear in the refactored file and run one command for each.
+python -m pytest test/<file>.py -v --hw-classification <CLASSIFICATION>
+# e.g.: GENERIC, DEVICE_GENERIC, DEVICE_SPECIFIC, CUDA
+```
+
+If any test fails, investigate and fix before proceeding. Common failure causes:
+- `instantiate_device_type_tests` conflicting with `instantiate_parametrized_tests` on the same class (see Common Pitfalls #8)
+- Missing helper methods after a class split
+- Device reference not fully converted
+
+**Step 7 — PR checklist:**
 
 Before submitting the PR:
 - [ ] All test classes have `hw_classification` attribute
@@ -248,9 +303,9 @@ Before submitting the PR:
 - [ ] PR title follows format: `[TEST] Refactor <filename> with hw_classification`
 - [ ] PR body includes test plan with command and output
 
-**Step 7 — Generate PR description:**
+**Step 8 — Generate PR description:**
 
-Produce a ready-to-use PR description following this template:
+Produce a ready-to-use PR description. Populate the Test Plan section with the actual summary lines captured in Step 6.
 
 ```markdown
 ## Summary
@@ -263,8 +318,16 @@ Changes:
 - Add hw_classification = DEVICE_GENERIC to TestBaz (no structural changes)
 
 ## Test Plan
-**<TEST_CONFIG=cuda python test/<file>.py>**
-Ran X tests in Y.YYYs — OK (skipped=Z)
+<populate with actual captured output from Step 6>
+<one entry per classification present in the file>
+
+```bash
+python -m pytest test/<file>.py -v
+X passed, Y skipped in Z.ZZs
+
+python -m pytest test/<file>.py -v --hw-classification <CLASSIFICATION>
+X passed, Y skipped in Z.ZZs
+```
 
 ## Dependencies
 <only if this PR depends on another unmerged PR, add: Depends on #<number>>
@@ -281,3 +344,6 @@ Check if the refactoring depends on any unmerged PRs (e.g., if `HardwareClassifi
 5. **Module-level code** — `instantiate_device_type_tests()` and `instantiate_parametrized_tests()` calls must be at module level, after the class definition.
 6. **Import ordering** — Follow the existing file's import style. Don't reorganize unrelated imports.
 7. **Class naming** — Follow existing naming conventions in the file. If the file uses `TestFooDeviceType`, keep that pattern for DEVICE_GENERIC classes.
+8. **`instantiate_device_type_tests` and `instantiate_parametrized_tests` are mutually exclusive** — Never apply both to the same class. See Phase 3 Step 4 sub-point 4 for the full decision table on which to use per classification.
+9. **Don't skip `instantiate_device_type_tests` for distributed tests** — It works with any base class that provides `self.device_type`, including `DTensorContinuousTestBase`, `DTensorTestBase`, and `LocalDTensorTestBase`. Don't reason yourself out of adding it because the class uses multi-process infrastructure.
+10. **Don't add `only_for=` to `instantiate_device_type_tests`** — The call should be plain `instantiate_device_type_tests(ClassName, globals())` unless there is an explicit, documented reason to restrict device types. Do not copy patterns from neighboring files without checking this skill first.
