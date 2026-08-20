@@ -239,6 +239,102 @@ point for memory planning (see
 generation but before the kernel call is emitted, ensuring buffers exist when
 the kernel runs.
 
+## Extending Fusion
+
+The sections above (and [CODEGEN.md](CODEGEN.md)) describe how fusion *works*. This
+section is how to *add* a new fusion pattern — one the existing `can_fuse` branches don't
+yet recognize.
+
+### One decision, two replays
+
+A lowering's `inner_fn` (Loop-Level IR) is replayed under different `ops` handlers: once
+under the analysis handler to extract `MemoryDep`s (what the scheduler reasons over), and
+again under a backend handler (`TritonKernelOverrides`) to emit code. So any new
+relationship your fusion introduces exists **twice** — as a dependency fact used for
+legality/scoring, and as an emission. The two must agree; when they can drift, keep a
+**single source of truth** — one pure formula, or one planner-proved fact both sides
+consume — or you get silently wrong kernels.
+
+### What to touch, by concern
+
+Fusion is spread across the pipeline **by design** — each layer owns one concern and
+constrains the next: `scheduler.py` (legality/scoring) → `codegen/simd.py` (iteration
+domain / tiling) → `codegen/triton.py` (emission) → `codegen/common.py` + `memory.py`
+(buffer accounting). New fusions are categorized by *which* concern they stress. Name the
+concern, then the code:
+
+- **"These two accesses are the same value" isn't recognized.** Prove the equivalence and
+  hand `SIMDScheduling.can_fuse()` the set of buffer names it may treat as index-equivalent
+  (a planner-proved set, e.g. `index_equivalent_dep_names`) — relax **only `MemoryDep`s**,
+  never `StarDep`/`WeakDep`. Normalize both indices to a common domain
+  (`MemoryDep.normalize_with_ranges`) and compare with
+  `V.graph.sizevars.statically_known_equals` — match on full `ranges`, **not numel**
+  (different domains share a numel; a numel-only check silently misclassifies, sometimes into
+  a *numerically wrong* fusion). Keep legality pure — no cost; don't smuggle a score-time
+  boolean into the shared predicate (an early `allow_index_equivalence` flag was deleted in
+  favor of the proved set precisely so scoring reuses the fully-legal relation).
+- **Two nodes need a new fused-node shape.** The default `FusedSchedulerNode` assumes one
+  iteration group. Two *different* stacked iteration spaces (e.g. a reduction and a finer
+  consumer) need a new subclass — `FusedNestedReductions` is the example — with its own
+  `can_fuse_with`/`fuse_with` and group metadata, plus a branch in
+  `SIMDScheduling.can_fuse()` and a dispatch arm in `Scheduler._codegen()` (see
+  [Fusion to Codegen Dispatch](#fusion-to-codegen-dispatch)).
+- **The iteration spaces don't match.** Resolve it in the iteration-domain layer
+  (`codegen/simd.py`): reorder tree dims, reindex the flat space, or build a derived family
+  (`_DerivedIterationFamily`) from the parent range tree — see
+  [CODEGEN.md — Range Trees](CODEGEN.md#range-trees) and
+  [Nested Reduction Codegen](CODEGEN.md#nested-reduction-codegen). Keep index-width / flops /
+  bytes analysis pointed at the **combined** accesses (thread an `indexing_node_schedule`
+  through the kernel-features object, e.g. `SIMDKernelFeatures`) so analysis matches what
+  you'll emit. Split math that pads/derives sub-blocks typically needs a **static,
+  power-of-two** parent extent (`is_power_of_2(...)`) so persistent blocks split safely.
+- **The value handoff needs a remap.** Wrap the ops handler (a `WrapperHandler` such as
+  `_PointwiseRemapHandler` / `_SubParentSourceLoadResolver`) so the consumer's `load`
+  resolves through `store_cache` to the producer's in-register value under the remapped
+  index instead of emitting `tl.load` — see
+  [CODEGEN.md — CSE](CODEGEN.md#cse-common-subexpression-elimination). Emit any re-tiling
+  with `tl.reshape` / `tl.split` / `tl.permute`; `tl.split` is factor-2 only, so **recurse
+  for factors > 2** (factor-2 is the base case). Hoist loop-invariant shape constants used by
+  derived families **once** to function scope via a conflict-detecting named-constant emitter
+  (e.g. `_codegen_named_constant`) so every family references an identical definition.
+- **Buffer accounting changes.** A register handoff asserts the intermediate need not be
+  materialized; kernel-local buffer removal must reflect that or you leak/double-free — see
+  [MEMORY-PLANNING.md](MEMORY-PLANNING.md). When one buffer is stored/forwarded across
+  multiple lane-groups, track **counts, not just names** (`store_buffer_counts` alongside
+  `store_buffer_names`, decremented in `remove_kernel_local_buffers`) so removal stays
+  correct.
+- **Gating.** Put every new path behind one `config.triton.<feature>` flag (e.g.
+  `config.triton.nested_reduction`), checked through a helper (e.g. `_is_enabled_for(n1, n2)`)
+  rather than the raw flag, so it applies only on the intended path and tests can flip it to
+  generate a reference.
+
+### Keep legality separate from profitability
+
+Legality decides *whether the fusion is valid*; profitability decides *whether it's worth
+it*. Never let a cheap score-time relaxation leak into legality. If your fusion is legal but
+sometimes slower, add a guard — see [FUSION-PROFITABILITY.md](FUSION-PROFITABILITY.md).
+
+### Land it incrementally
+
+Build the most restrictive vertical slice first (one factor/layout/path, end-to-end and
+correct), then generalize the quantitative axis (factor, lanes, staging), then add
+qualitative variants (a second layout), then clean up. Make capability ceilings explicit
+constants so raising one is a one-line, test-guarded change.
+
+### Testing (three altitudes)
+
+1. **Predicate/formula unit tests — mocked, no compile.** Construct
+   `MemoryDep`/`StarDep`/`WeakDep` directly, call scheduler predicates with
+   `Scheduler.__new__(Scheduler)` + mocked attrs, and test any shared formula in isolation.
+   Assert relaxation touches only `MemoryDep`s.
+2. **Fusion-decision level.** `metrics.generated_kernel_count`, a feature-specific counter,
+   and explicit fallback assertions.
+3. **Emitted-kernel form + numerics.** `run_and_get_code` + `FileCheck` on the Triton
+   (`tl.split` count, `tl.permute`, looped-vs-persistent via `for r0_offset in tl.range`),
+   plus **numeric equality against the same function compiled with the flag off**. Pick
+   inputs where a *misclassification* yields a numeric mismatch, not just a lost fusion.
+   Give every rejection path its own `*_rejects_*` test, including each interacting config.
+
 ## Key Files
 
 - `scheduler.py` — `can_fuse` scoring, `NestedReduction`,
@@ -254,4 +350,6 @@ the kernel runs.
 [CODEGEN.md](CODEGEN.md)
 **For memory planning** (buffer reuse, allocation pools):
 [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
+**For guarding a fusion for profitability** (cost modeling, coalescing):
+[FUSION-PROFITABILITY.md](FUSION-PROFITABILITY.md)
 **For architecture overview**: [ARCHITECTURE.md](ARCHITECTURE.md)

@@ -87,13 +87,6 @@ and therefore keeping context small. Fixing issues requires significant
 exploration of the code base and will easily fill context since PyTorch is a
 huge repo. This leads to poor outcomes in general.
 
-**PyTorch API lookup (via steering MCP):**
-```
-What are the parameters for Pointwise.__init__?
-How do I use SymInt in C++ code?
-Show me FakeTensor usage patterns
-```
-
 **PyTorch implementation work:**
 ```
 How do I implement a new VariableTracker type?

@@ -12,6 +12,7 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 **Working with Inductor?** Start here:
 - Understanding architecture → See [ARCHITECTURE.md](ARCHITECTURE.md)
 - Fusion decisions & dispatch → See [FUSION.md](FUSION.md)
+- Guarding a fusion for profitability → See [FUSION-PROFITABILITY.md](FUSION-PROFITABILITY.md)
 - Codegen internals → See [CODEGEN.md](CODEGEN.md)
 - Memory planning → See [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 - Common patterns → See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
@@ -233,6 +234,7 @@ class MyTest(TestCase):
 - **Getting started**: This file
 - **Architecture deep-dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
 - **Fusion decisions & dispatch**: [FUSION.md](FUSION.md)
+- **Guarding a fusion for profitability**: [FUSION-PROFITABILITY.md](FUSION-PROFITABILITY.md)
 - **Codegen internals**: [CODEGEN.md](CODEGEN.md)
 - **Memory planning**: [MEMORY-PLANNING.md](MEMORY-PLANNING.md)
 - **Common patterns**: [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
