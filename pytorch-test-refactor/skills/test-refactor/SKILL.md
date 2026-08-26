@@ -32,6 +32,19 @@ These three rules from the project lead govern all refactoring decisions:
 
 ## Workflow
 
+### Phase 0: Check for Conflicting PRs
+
+Before starting analysis, verify no open or draft PR in upstream already targets the same file for refactoring. Do NOT use `gh pr list --json files` — pytorch/pytorch has 3000+ open PRs, fetching per-PR file lists at that scale hits GitHub API 502s and rate limits. Instead, search by basename keyword (matches PR title/body):
+
+```bash
+gh search prs --repo pytorch/pytorch --state open "<basename>" --json number,title,url,isDraft
+```
+
+Replace `<basename>` with just the filename (e.g., `test_dtensor_logging.py`, not the full path — keyword search matches title/body text, not paths). Review each hit's title to confirm it's actually touching the target file (not a coincidental name match) — open the PR with `gh pr view <number> --repo pytorch/pytorch --json files` to confirm if ambiguous. If a real match exists:
+- **Same refactoring in progress**: Notify user and skip. Link existing PR.
+- **Different changes to same file**: Notify user of potential merge conflict. Coordinate or wait for existing PR to land.
+- **No conflicts**: Proceed to Phase 1.
+
 ### Phase 1: Analyze
 
 Read the target test file and build an inventory.
