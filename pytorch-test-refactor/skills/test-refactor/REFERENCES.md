@@ -43,6 +43,7 @@ Study these PRs to understand the accepted refactoring patterns:
 | [#185699](https://github.com/pytorch/pytorch/pull/185699) | `test/test_binary_ufuncs.py` | Refactoring a large ops test file |
 | [#183586](https://github.com/pytorch/pytorch/pull/183586) | `test/test_linalg.py` | Extracting CUDA-only tests (TunableOp) into `TestLinalgCUDA` |
 | [#187922](https://github.com/pytorch/pytorch/pull/187922) | `test/nn/test_embedding.py` | Renaming classes with `hw_classification` following PR #186918 |
+| [#190830](https://github.com/pytorch/pytorch/pull/190830) | `test/distributed/tensor/test_dtensor_ops.py` | Classifying distributed tests using fake/multi-threaded PGs as GENERIC |
 
 ## Key Source Files
 
@@ -77,8 +78,6 @@ These files in the PyTorch repo implement the testing infrastructure:
 
 | Category | Enum Value | When to Use |
 |----------|-----------|-------------|
-| GENERIC | `HardwareClassification.GENERIC` | CPU-only logic, no device dependency |
-| DEVICE_GENERIC | `HardwareClassification.DEVICE_GENERIC` | Works on any accelerator |
-| DEVICE_SPECIFIC | `HardwareClassification.CUDA` / `.XPU` / `.MPS` | Locked to one accelerator |
-| MULTI_DEVICE_GENERIC | `HardwareClassification.MULTI_DEVICE_GENERIC` | Multi-device, any backend |
-| MULTI_DEVICE_SPECIFIC | `HardwareClassification.MULTI_DEVICE_SPECIFIC` | Multi-device, specific backend |
+| GENERIC | `HardwareClassification.GENERIC` | CPU-only logic, no device dependency. Device-agnostic tests (dispatcher, autograd, serialization, JIT/FX, FakePG distributed). Runs once on CPU. |
+| ACCELERATOR | `HardwareClassification.ACCELERATOR` | Tests expected to pass on every accelerator (op numerics, tensor ops, distributed collectives across backends). Uses `instantiate_device_type_tests`. |
+| Device-specific | `HardwareClassification.CUDA` / `.XPU` / `.MPS` / `.CPU` | Locked to one device — functionality has no equivalent elsewhere (CUDA memory/graphs, cuDNN, NCCL-specific, TunableOp). Use sparingly. |
