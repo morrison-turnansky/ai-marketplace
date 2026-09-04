@@ -126,7 +126,8 @@ def add_lowering(a, b):
 BaseSchedulerNode
 ├── SchedulerNode (single operation)
 ├── FusedSchedulerNode (fused operations)
-│   └── FusedNestedReductions (nested reduction pairs)
+│   └── FusedStagedReduction (multi-stage reduction fusion)
+│       └── FusedNestedReductions (nested reduction specialization)
 ├── ExternKernelSchedulerNode (external call)
 ├── NopKernelSchedulerNode (eliminated)
 └── ForeachKernelSchedulerNode (multi-tensor)
@@ -137,10 +138,11 @@ BaseSchedulerNode
 2. Topologically sort operations
 3. Determine fusion legality (`can_fuse` — binary gate)
 4. Score and rank legal fusions (separate from legality)
-5. Compute buffer lifetimes
-6. Apply memory planning
-7. Generate kernel code per node
-8. Generate wrapper orchestration
+5. Construct specialized staged plans when a fusion spans multiple domains
+6. Compute buffer lifetimes
+7. Apply memory planning
+8. Generate kernel code per node
+9. Generate wrapper orchestration
 
 See [FUSION.md](FUSION.md) for the full `can_fuse` decision tree, `MemoryDep` data model, and nested reduction subsystem.
 
@@ -306,8 +308,10 @@ Node IR → [scheduler wraps] → Schedule IR → [trace inner_fn] → Loop-Leve
 fusion analysis — see [FUSION.md](FUSION.md)), tracks dependencies via
 `ancestors` and `unmet_dependencies`, and assigns a `group` key
 `(device, (numel, rnumel))` for fusion matching. Fusion produces
-`FusedSchedulerNode` (multiple Node IR nodes in one kernel) or
-`FusedNestedReductions` (nested reduction pairs).
+`FusedSchedulerNode` (multiple Node IR nodes in one kernel) or specialized
+staged nodes such as `FusedNestedReductions`. A staged node carries the
+validated structure needed to emit parent, nested, and derived pointwise
+stages.
 
 ### 3. Loop-Level IR (`loop_body.py`)
 
@@ -332,7 +336,7 @@ assembly mechanics.
 | Level | Lives in | Key types | Represents |
 |---|---|---|---|
 | Node IR | `ir.py` | `Pointwise`, `Reduction`, `TemplateBuffer` | What to compute |
-| Schedule IR | `scheduler.py` | `SchedulerNode`, `FusedSchedulerNode`, `MemoryDep` | When and with whom (fusion) |
+| Schedule IR | `scheduler.py` | `SchedulerNode`, `FusedSchedulerNode`, staged plans, `MemoryDep` | When and with whom (fusion) |
 | Loop-Level IR | `loop_body.py` | `LoopBody`, `ops.load`, `ops.store` | How to iterate |
 | Codegen IR | `codegen/` | Phase buffers, `IndentedBuffer`, target strings | Target source code |
 
@@ -402,7 +406,9 @@ Post-Grad Passes (layout optimization, split/cat fusion)
     ↓
 GraphLowering.run() (interpret nodes, build IR, apply constraints)
     ↓
-Scheduler (dependencies, fusion, lifetimes, memory planning)
+Scheduler (dependencies, fusion plans, lifetimes, memory planning)
+    ↓
+Loop-domain normalization / final staged-plan validation
     ↓
 Code Generation (Triton/C++ kernels, wrapper code)
     ↓
@@ -423,7 +429,7 @@ Output: Compiled Function (callable, JIT-compiled kernels)
 - `ir.py`: IR node definitions
 
 ### Fusion Decisions
-- `scheduler.py`: Fusion legality, scoring, `NestedReduction`, `FusedNestedReductions`
+- `scheduler.py`: Fusion legality, scoring, `NestedReduction`, staged plans, and `FusedNestedReductions`
 - `dependencies.py`: `MemoryDep`, `StarDep`, dependency analysis
 - `codegen/simd.py`: `SIMDScheduling.can_fuse()`, node schedule generation
 
@@ -476,7 +482,8 @@ TorchInductor's architecture enables:
 5. **Symbolic shapes**: Full SymPy integration from ground up
 6. **Fusion-first**: Aggressive fusion drives performance
 7. **Layout flexibility**: Optimizer chooses best layout
-8. **Multi-backend**: Pluggable codegen for different hardware
+8. **Staged fusion**: Some fusion families carry explicit multi-domain plans from scheduling into codegen
+9. **Multi-backend**: Pluggable codegen for different hardware
 
 ## Decomposition and Lowering Pipeline
 
@@ -534,4 +541,3 @@ Decompositions transform the graph structure; lowerings generate loop-level IR.
 ---
 
 **For practical patterns and examples**: See [COMMON-PATTERNS.md](COMMON-PATTERNS.md)
-

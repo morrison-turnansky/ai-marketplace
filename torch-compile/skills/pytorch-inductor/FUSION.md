@@ -32,18 +32,19 @@ actual logic has at least five branches:
    fails, falls through to:
    - `MixOrderReduction.can_fuse` — can the two reductions share a
      mixed-order loop?
-   - `NestedReduction` dependent-pair check — are these two reductions over
-     the same logical elements at different granularities (e.g., layernorm
-     followed by block-scale quantization)?
+   - `NestedReduction` staged-plan check — are these reductions over the same
+     logical elements at different granularities, with compatible pointwise
+     domains and source relationships?
    - Native-matmul tiling compatibility
 
 4. **Non-reduction pairs** — requires `numel` and `rnumel` match, with
    exceptions for template/prologue fusion and tiling compatibility checks.
 
 5. **Reduction + Pointwise epilogue** — when one node is a reduction and the
-   other is pointwise with `rnumel=1`, args are swapped and re-checked.
-   This is how reduction epilogues (e.g., `x.mean(keepdim=True)` followed
-   by `x - mean`) get fused into a single kernel with two passes.
+   other is pointwise, args are swapped and re-checked. Standard epilogues use
+   a two-pass kernel; staged nested reductions can additionally place pointwise
+   consumers in a derived sub-parent domain when their accesses and layouts
+   are proven compatible.
 
 ## Key Data Structure: `MemoryDep`
 
@@ -103,7 +104,8 @@ mean = x.mean(keepdim=True); norm = x - mean
 ```python
 # Two dependent reductions over the same elements at different granularity
 # e.g., layernorm (per-row) + block amax (per-block-of-rows)
-# Detected by NestedReduction, fused into FusedNestedReductions node
+# Detected by NestedReduction, planned as staged fusion, then represented by
+# a FusedNestedReductions node
 ```
 
 ## Nested Reduction Subsystem
@@ -114,14 +116,26 @@ nested reduction subsystem handles this:
 
 ### Scheduler side (`scheduler.py`)
 
-- **`NestedReduction`** — detects when an outer reduction and a dependent
-  grouped reduction can fuse into one kernel. Analyzes the relationship
-  between the two reduction domains and determines how to map one onto the
-  other. Contains the dependent-pair detection logic called from `can_fuse`.
+- **`NestedReduction`** — builds a staged plan for an outer reduction and a
+  dependent grouped reduction. The plan classifies pointwise work by domain,
+  records the parent and nested stages, and may add a derived sub-parent
+  epilogue when the access relationships are valid.
 
-- **`FusedNestedReductions(FusedSchedulerNode)`** — the scheduler node for
-  two dependent reductions over the same logical elements. Once created by
-  the scheduler, it is handed to codegen as a single unit.
+- **`FusedStagedReduction`** — common scheduler abstraction for fused reductions
+  that require multiple codegen stages.
+
+- **`FusedNestedReductions`** — nested-reduction specialization of staged
+  fusion. It is not merely a pairwise wrapper; it carries the approved stage
+  structure used by codegen.
+
+Upstream pointwise nodes can be modeled as local reduction inputs when they are
+already part of the approved nested topology. The stack primarily expands the
+downstream reduction-to-pointwise epilogue side, rather than adding a general
+pointwise-to-reduction fusion path.
+
+Fusion planning occurs before final loop normalization. Because normalization
+can change iteration domains, codegen validates or rebuilds the staged plan
+from the normalized nodes.
 
 ### Codegen side (`codegen/simd.py`)
 
@@ -139,7 +153,8 @@ The scheduler wraps IR nodes in its own type hierarchy for fusion tracking:
 BaseSchedulerNode
 ├── SchedulerNode              — single IR operation
 ├── FusedSchedulerNode         — multiple operations fused into one kernel
-│   └── FusedNestedReductions  — two dependent reductions fused
+│   └── FusedStagedReduction    — multi-stage reduction fusion
+│       └── FusedNestedReductions — nested reduction specialization
 ├── ExternKernelSchedulerNode  — external call (matmul, conv)
 ├── NopKernelSchedulerNode     — eliminated operation
 └── ForeachKernelSchedulerNode — multi-tensor operation
@@ -164,7 +179,7 @@ for node in nodes:
     if node.is_template():           → codegen_template()
     elif node.is_extern():           → codegen_extern_call()
     elif node.is_foreach():          → codegen_combo_kernel()
-    elif FusedNestedReductions:      → codegen_nested_reduction()
+    elif FusedStagedReduction:       → specialized staged-reduction codegen
     elif FusedMixOrderReductions:    → codegen_mix_order_reduction()
     elif FusedSchedulerNode/
          SchedulerNode:              → backend.codegen_node()   # main SIMD path
@@ -205,6 +220,10 @@ above) becomes executable: the scheduler decides the fusion is legal, then
 `generate_node_schedule()` arranges the nodes so the reduction runs first,
 markers flush the loop, and the epilogue runs as pointwise code consuming
 the reduction result — all in one kernel.
+
+Staged reductions extend this structure with explicit parent, nested, and
+derived epilogue stages. The scheduler decides which stages are legal, and
+specialized codegen emits the corresponding structured schedule.
 
 ### The Bridge to Kernel Codegen
 
