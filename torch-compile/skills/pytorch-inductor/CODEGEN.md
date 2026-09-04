@@ -430,10 +430,16 @@ the scheduler decides the fusion is legal (see [FUSION.md](FUSION.md)),
 `codegen_node_schedule_with_kernel()` drives the two-pass codegen through
 the marked schedule.
 
+Staged reduction fusion builds on this mechanism. A staged plan describes the
+parent reduction, nested/grouped reduction, and any derived pointwise epilogue
+domains. Since loop normalization can change ranges after scheduling, codegen
+validates or rebuilds the final staged plan before emitting the kernel.
+
 ## Nested Reduction Codegen
 
-When `FusedNestedReductions` reaches codegen, specialized machinery in
-`codegen/simd.py` handles the multi-resolution tile layout:
+When a `FusedNestedReductions` staged plan reaches codegen, specialized
+machinery in `codegen/simd.py` handles the multi-resolution tile layout and
+emits the planned reduction and pointwise stages:
 
 ### `_GroupedReductionLayout`
 

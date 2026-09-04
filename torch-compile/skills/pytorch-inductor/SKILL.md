@@ -21,7 +21,7 @@ Expert guidance for working with PyTorch's Inductor compiler backend - the defau
 
 Inductor is PyTorch's deep learning compiler that serves as the default backend for `torch.compile()`. It takes FX graphs from Dynamo and generates optimized machine code.
 
-**Core pipeline**: FX Graph → Lowering → Scheduling → Fusion → Codegen (Triton/C++/CUDA)
+**Core pipeline**: FX Graph → Lowering → Scheduling and Fusion Planning → Loop-Level IR → Codegen (Triton/C++/CUDA)
 
 ### Design Principles
 
@@ -100,13 +100,20 @@ Uses **SymPy** extensively for reasoning about shapes, strides, and indexing:
 - Guards propagate globally
 
 ### Scheduling & Fusion
-The scheduler wraps Node IR in **Schedule IR** (`SchedulerNode`, `FusedSchedulerNode`) — adding dependency tracking, `MemoryDep` access patterns, and fusion group keys. Fusion is a two-phase process — **legality** then **scoring** — that are architecturally distinct:
+The scheduler wraps Node IR in **Schedule IR** (`SchedulerNode`, `FusedSchedulerNode`) — adding dependency tracking, `MemoryDep` access patterns, and fusion group keys. Some fusion families also construct an explicit staged plan that describes multiple iteration domains and how codegen should emit them. Fusion is a two-phase process — **legality** then **scoring** — that are architecturally distinct:
 
 **Legality** (`can_fuse` in `SIMDScheduling`): A multi-branch decision tree. Not a simple "same numel" check — branches handle reduction pairs (including nested reduction dependent pairs), non-reduction pairs (with template exceptions), and reduction+pointwise epilogues.
 
 **Scoring**: Ranks legal candidates by memory traffic saved.
 
-**Fusion patterns**: vertical (producer-consumer), horizontal (consumer-consumer), reduction+epilogue (two-pass kernel), nested reduction (`FusedNestedReductions`).
+**Fusion patterns**: vertical (producer-consumer), horizontal (consumer-consumer), reduction+epilogue (two-pass kernel), and staged nested reduction (`FusedNestedReductions`).
+
+#### Staged Nested-Reduction Fusion
+
+Nested-reduction fusion is plan-based: `NestedReduction` validates compatible
+reduction and pointwise domains and produces a staged `FusedNestedReductions`
+node. The plan may include derived pointwise epilogues and is finalized after
+loop-domain normalization.
 
 **Files**: `scheduler.py`, `dependencies.py`, `codegen/simd.py`
 **Deep dive**: [FUSION.md](FUSION.md)
@@ -119,7 +126,7 @@ Each `SchedulerNode`'s `inner_fn` is traced into **Loop-Level IR** (`LoopBody` �
 - **C++** (`codegen/cpp.py`) - CPU kernels with vectorization and OpenMP
 - **CUDA** (`codegen/cuda/`) - Direct CUDA for specialized cases
 
-**IR progression**: Node IR → Schedule IR → Loop-Level IR → Codegen IR → executable
+**IR progression**: Node IR → Schedule IR and staged plans → Loop-Level IR → Codegen IR → executable
 **Deep dive**: [CODEGEN.md](CODEGEN.md), [ARCHITECTURE.md — IR Levels](ARCHITECTURE.md)
 
 ### Memory Planning
